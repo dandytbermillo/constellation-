@@ -42,25 +42,7 @@ export async function GET() {
     const constellations: Constellation[] = [];
 
     // Add knowledge-base as the central constellation
-    // The 5 subfolders will appear as items around it
-    const knowledgeBaseItems: ConstellationItem[] = rootFolders.map((folder: any, index: number) => {
-      const angle = (360 / rootFolders.length) * index;
-      return {
-        id: folder.id,
-        title: folder.name,
-        type: 'folder',
-        importance: 5,
-        angle,
-        distance: 150, // Distance from center
-        icon: '📁',
-        content: folder.path,
-        tags: ['knowledge-base', folder.name],
-        isFolder: true,
-        children: [],
-        depthLayer: 1 // Subfolders pushed back behind Knowledge Base center
-      };
-    });
-
+    // Since subfolders are their own constellations, Knowledge Base has no items
     const knowledgeBaseConstellation: Constellation = {
       id: knowledgeBaseId,
       name: 'Knowledge Base',
@@ -68,7 +50,7 @@ export async function GET() {
       color: '#6366f1', // Indigo color for root
       centerX: 650, // Center position
       centerY: 350,
-      items: knowledgeBaseItems,
+      items: [], // Empty - subfolders are constellation centers, not items
       depthLayer: 0 // Root is at foreground
     };
 
@@ -118,7 +100,8 @@ export async function GET() {
           tags: extractTags(child),
           isFolder: child.type === 'folder',
           children: [], // We can add nested children later if needed
-          depthLayer: 2 // Subfolder contents pushed behind their parent constellation center
+          depthLayer: 2, // Subfolder contents pushed behind their parent constellation center
+          constellation: folder.id // Add constellation ID so we know which constellation this item belongs to
         };
       });
 
@@ -146,7 +129,8 @@ export async function GET() {
           icon: child.icon || getDefaultIcon(child.type),
           content: child.content, // Use actual content from database
           tags: extractTags(child),
-          isFolder: child.type === 'folder'
+          isFolder: child.type === 'folder',
+          constellation: folder.id // Add constellation ID
         }));
 
         const overflowNode: ConstellationItem = {
@@ -163,7 +147,8 @@ export async function GET() {
           isOverflowNode: true,
           overflowParentId: folder.id,
           allChildren: allChildren,
-          depthLayer: 2
+          depthLayer: 2,
+          constellation: folder.id // Add constellation ID
         };
 
         items.push(overflowNode);

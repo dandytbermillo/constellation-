@@ -5,7 +5,11 @@
 const { Pool } = require('pg')
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://dandy@localhost:5432/annotation_dev'
+  host: 'localhost',
+  port: 5432,
+  database: 'annotation_dev',
+  user: 'postgres',
+  password: 'postgres',
 })
 
 async function checkStructure() {

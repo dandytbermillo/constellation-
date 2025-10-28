@@ -114,8 +114,8 @@ export default function ConstellationPage() {
     });
 
     if (item.isOverflowNode && item.allChildren && item.overflowParentId) {
-      // Find the parent folder
-      const parentFolder = allItems.find(i => i.id === item.overflowParentId);
+      // Find the parent constellation (folder) by ID
+      const parentConstellation = constellations.find(c => c.id === item.overflowParentId);
 
       await fetch('/api/debug/log', {
         method: 'POST',
@@ -123,17 +123,17 @@ export default function ConstellationPage() {
         body: JSON.stringify({
           component: 'OverflowNodeClick',
           action: 'opening_modal',
-          content_preview: `Opening modal for: ${parentFolder?.title || 'unknown'}`,
+          content_preview: `Opening modal for: ${parentConstellation?.name || 'unknown'}`,
           metadata: {
             parentFolderId: item.overflowParentId,
-            parentFolderTitle: parentFolder?.title,
+            parentFolderName: parentConstellation?.name,
             itemsCount: item.allChildren.length
           }
         })
       });
 
-      if (parentFolder) {
-        setModalFolderName(parentFolder.title);
+      if (parentConstellation) {
+        setModalFolderName(parentConstellation.name);
         setModalFolderItems(item.allChildren);
         setShowFolderModal(true);
 
@@ -145,7 +145,7 @@ export default function ConstellationPage() {
             action: 'modal_opened',
             content_preview: `Modal opened successfully`,
             metadata: {
-              folderName: parentFolder.title,
+              folderName: parentConstellation.name,
               itemsCount: item.allChildren.length,
               showModal: true
             }

@@ -371,7 +371,16 @@ export default function ConstellationVisualization({
     }
 
     // First pass: collect all connection data
-    const connectionData: Array<{item1: any, item2: any, pos1: any, pos2: any, importance: number, connectionType: string}> = [];
+    const connectionData: Array<{
+      item1: any,
+      item2: any,
+      pos1: any,
+      pos2: any,
+      importance: number,
+      connectionType: string,
+      item1Constellation: string | null,
+      item2Constellation: string | null
+    }> = [];
 
     connections.forEach(([id1, id2]) => {
       const item1 = allItems.find(item => item.id === id1);
@@ -397,7 +406,11 @@ export default function ConstellationVisualization({
       
       // Smart filtering - skip connections that shouldn't be shown
       const shouldShow = shouldShowConnection(item1, item2, pos1, pos2, importance, connectionType);
-      
+
+      // Store constellation info for later use in rendering
+      const item1Constellation = item1.constellation || (item1.isCenter ? item1.id.replace('_center', '') : null);
+      const item2Constellation = item2.constellation || (item2.isCenter ? item2.id.replace('_center', '') : null);
+
       // Log connection filtering details for cross-constellation connections when debugging
       if (state.showDebugPanel && (id1.includes('w1') || id2.includes('w1') || id1.includes('f1') || id2.includes('f1'))) {
         const worldPos1 = getNodePosition(item1, state.nodePositions, allItems);
@@ -427,7 +440,16 @@ export default function ConstellationVisualization({
         return;
       }
 
-      connectionData.push({ item1, item2, pos1, pos2, importance, connectionType });
+      connectionData.push({
+        item1,
+        item2,
+        pos1,
+        pos2,
+        importance,
+        connectionType,
+        item1Constellation,
+        item2Constellation
+      });
     });
 
     // Apply connection bundling if enabled
@@ -457,7 +479,19 @@ export default function ConstellationVisualization({
         bundleLine.setAttribute('opacity', '0.6');
         bundleLine.setAttribute('stroke-linecap', 'round');
         bundleLine.classList.add('connection-bundle');
-        
+
+        // Disable transitions for bundled connections not in focused constellation
+        if (state.focusedConstellation) {
+          const conn = bundleConnections[0];
+          const item1Constellation = conn.item1Constellation;
+          const item2Constellation = conn.item2Constellation;
+          const belongsToFocused = item1Constellation === state.focusedConstellation ||
+                                   item2Constellation === state.focusedConstellation;
+          if (!belongsToFocused) {
+            bundleLine.classList.add('connection-no-transition');
+          }
+        }
+
         // Add bundle indicator
         bundleLine.setAttribute('data-bundle-count', bundleConnections.length.toString());
         bundleLine.style.filter = 'drop-shadow(0 0 4px rgba(100, 181, 246, 0.5))';
@@ -479,7 +513,7 @@ export default function ConstellationVisualization({
         const conn = bundleConnections[0];
         const { item1, item2, pos1, pos2, importance, connectionType } = conn;
         const isHighlighted = isConnectionHighlighted([item1.id, item2.id]);
-        
+
         // Calculate visual properties
         const depthLayer1 = getItemDepthLayer(item1);
         const depthLayer2 = getItemDepthLayer(item2);
@@ -505,7 +539,18 @@ export default function ConstellationVisualization({
         line.setAttribute('stroke-width', strokeWidth.toString());
         line.setAttribute('opacity', connectionOpacity.toString());
         line.classList.add('connection-line', `connection-${connectionType}`);
-        
+
+        // Disable transitions for individual connections not in focused constellation
+        if (state.focusedConstellation) {
+          const item1Constellation = conn.item1Constellation;
+          const item2Constellation = conn.item2Constellation;
+          const belongsToFocused = item1Constellation === state.focusedConstellation ||
+                                   item2Constellation === state.focusedConstellation;
+          if (!belongsToFocused) {
+            line.classList.add('connection-no-transition');
+          }
+        }
+
         // Store connection metadata for hover interactions
         line.setAttribute('data-connection-id1', item1.id);
         line.setAttribute('data-connection-id2', item2.id);
@@ -649,9 +694,12 @@ export default function ConstellationVisualization({
       
       // Make sure the node is visible
       nodeGroup.style.display = 'block';
-      
-      // Apply depth transitions with CSS
-      nodeGroup.style.transition = state.depthAnimationActive ? 'all 0.6s cubic-bezier(0.4, 0, 0.2, 1)' : 'none';
+
+      // Apply depth transitions with CSS - only animate nodes in the focused constellation
+      // When a constellation is focused, only animate nodes that belong to that constellation
+      const shouldAnimate = state.depthAnimationActive &&
+        (state.focusedConstellation === null || state.focusedConstellation === itemConstellation);
+      nodeGroup.style.transition = shouldAnimate ? 'all 0.6s cubic-bezier(0.4, 0, 0.2, 1)' : 'none';
       
       // Apply depth blur effect
       if (depthLayer > 0 && depthBlur !== 'none') {

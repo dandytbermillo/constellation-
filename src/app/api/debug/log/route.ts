@@ -3,7 +3,16 @@ import pool from '@/lib/db';
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    // Check if body exists and has content
+    const text = await request.text();
+    if (!text || text.trim() === '') {
+      return NextResponse.json({
+        success: false,
+        error: 'Empty request body'
+      }, { status: 400 });
+    }
+
+    const body = JSON.parse(text);
     const { component, action, content_preview, metadata, session_id, timestamp } = body;
 
     // Insert into constellation_debug_logs table (separate from existing debug_logs)

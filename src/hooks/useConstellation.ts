@@ -1022,7 +1022,8 @@ export function useConstellation() {
         return {
           ...prevState,
           focusedConstellation: null,
-          focusTransitionActive: true
+          focusTransitionActive: true,
+          depthAnimationActive: true
         };
       }
 
@@ -1032,7 +1033,8 @@ export function useConstellation() {
       return {
         ...prevState,
         focusedConstellation: itemConstellation,
-        focusTransitionActive: true
+        focusTransitionActive: true,
+        depthAnimationActive: true
       };
     });
 
@@ -1040,7 +1042,8 @@ export function useConstellation() {
     setTimeout(() => {
       setState(prevState => ({
         ...prevState,
-        focusTransitionActive: false
+        focusTransitionActive: false,
+        depthAnimationActive: false
       }));
     }, 600);
   }, [allItems, constellations, showHint]);

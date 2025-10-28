@@ -117,17 +117,27 @@ export default function FolderContentsModal({
         status: 'loading'
       });
 
-      // Fetch content
+      // Fetch content from document_saves table
       try {
-        // For now, use a placeholder. In a real app, you'd fetch from an API
-        const content = item.content || `Content preview for ${item.title}\n\nThis is where the file content would be displayed.`;
+        const response = await fetch(`/api/items/${item.id}/content`);
+        const data = await response.json();
 
-        setActivePreview({
-          itemId: item.id,
-          content,
-          position: { x: previewX, y: previewY },
-          status: 'ready'
-        });
+        if (data.success && data.content) {
+          setActivePreview({
+            itemId: item.id,
+            content: data.content,
+            position: { x: previewX, y: previewY },
+            status: 'ready'
+          });
+        } else {
+          // Fallback if no content found
+          setActivePreview({
+            itemId: item.id,
+            content: `Content preview for ${item.title}\n\nThis is where the file content would be displayed.`,
+            position: { x: previewX, y: previewY },
+            status: 'ready'
+          });
+        }
       } catch (error) {
         setActivePreview({
           itemId: item.id,

@@ -269,6 +269,11 @@
     stroke-width: 1px !important;
   }
 
+  /* Disable transitions for non-focused constellation connections */
+  .connection-no-transition {
+    transition: none !important;
+  }
+
   /* Hidden class for labels */
   .hidden {
     display: none;
