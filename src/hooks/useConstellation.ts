@@ -919,19 +919,28 @@ export function useConstellation() {
 
     // Use explicitly assigned depth layer if present
     if (item.depthLayer !== undefined) {
+      // ⭐ CRITICAL: Only hide NESTED children (Layer 3+), not direct constellation children (Layer 2)
+      // Layer 2 items (direct children of constellations) should always be visible
+      if (item.depthLayer === 2) {
+        return 2; // Always visible - direct children of constellation centers
+      }
+
+      // For nested children (Layer 3+), check if ancestors are expanded
+      if (item.parentId && item.depthLayer > 2) {
+        // Check if all ancestors are expanded
+        if (!areAllAncestorsExpanded(item, state.expandedConstellations, allItems)) {
+          return 999; // Hidden layer - ancestors not expanded yet
+        }
+      }
+
       return item.depthLayer;
     }
 
     // Calculate hierarchy level for items without explicit depth
     const hierarchyLevel = calculateHierarchyLevel(item, allItems);
 
-    // For items with parents, check if they should be visible
+    // For items with parents (if we got here, ancestors are expanded)
     if (item.parentId) {
-      // Check if all ancestors are expanded
-      if (!areAllAncestorsExpanded(item, state.expandedConstellations, allItems)) {
-        return 999; // Hidden layer
-      }
-
       // Push children AWAY from user based on hierarchy
       return hierarchyLevel;
     }

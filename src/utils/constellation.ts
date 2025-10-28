@@ -14,10 +14,87 @@ export function calculateChildPosition(
   return { x, y };
 }
 
+// Helper function to recursively process children and add them to allItems
+function processChildrenRecursively(
+  parentItem: ConstellationItem,
+  parentPos: { x: number; y: number },
+  constellation: Constellation,
+  allItems: ConstellationItem[],
+  depth: number = 0
+) {
+  if (!parentItem.children || parentItem.children.length === 0) {
+    return;
+  }
+
+  const MAX_VISIBLE_CHILDREN = 10;
+  const childrenToShow = parentItem.children.slice(0, MAX_VISIBLE_CHILDREN);
+  const hasMoreChildren = parentItem.children.length > MAX_VISIBLE_CHILDREN;
+
+  childrenToShow.forEach(child => {
+    const childRadian = (child.angle * Math.PI) / 180;
+    const childX = parentPos.x + Math.cos(childRadian) * child.distance;
+    const childY = parentPos.y + Math.sin(childRadian) * child.distance;
+
+    const inheritedDepth = child.depthLayer !== undefined
+      ? child.depthLayer
+      : (parentItem.depthLayer !== undefined ? parentItem.depthLayer + 1 : 3 + depth);
+
+    const fullChild: ConstellationItem = {
+      ...child,
+      constellation: constellation.id,
+      x: childX,
+      y: childY,
+      color: constellation.color,
+      parentId: parentItem.id, // ✅ Set parent reference
+      depthLayer: inheritedDepth, // Ensure nested children start at Layer 3+
+      content: child.content || `This is a ${child.type} from ${parentItem.title}. ${child.content || 'Part of your organized file structure.'}`,
+      tags: child.tags || [parentItem.title.toLowerCase(), child.type]
+    };
+    allItems.push(fullChild);
+
+    // ⭐ DO NOT recursively process nested children on page load
+    // Nested children (Layer 3+) stay in the children property but are NOT added to allItems
+    // They will be added later when the user double-clicks the folder
+    // Only the direct children (depth=0, Layer 2) are processed here
+  });
+
+  // Overflow node logic (same as before)
+  if (hasMoreChildren) {
+    const remainingCount = parentItem.children.length - MAX_VISIBLE_CHILDREN;
+    const moreNodeAngle = 360;
+    const moreNodeRadian = (moreNodeAngle * Math.PI) / 180;
+    const moreNodeX = parentPos.x + Math.cos(moreNodeRadian) * parentItem.distance;
+    const moreNodeY = parentPos.y + Math.sin(moreNodeRadian) * parentItem.distance;
+
+    const moreNode: ConstellationItem = {
+      id: `${parentItem.id}_more`,
+      title: `+${remainingCount} more`,
+      type: 'folder',
+      constellation: constellation.id,
+      importance: 3,
+      angle: moreNodeAngle,
+      distance: parentItem.distance,
+      x: moreNodeX,
+      y: moreNodeY,
+      color: constellation.color,
+      parentId: parentItem.id,
+      depthLayer: 3 + depth,
+      content: `View all ${parentItem.children.length} items in ${parentItem.title}`,
+      tags: ['overflow', 'more'],
+      icon: '📋',
+      isFolder: false,
+      isOverflowNode: true,
+      overflowParentId: parentItem.id,
+      allChildren: parentItem.children
+    };
+    allItems.push(moreNode);
+  }
+}
+
 // Generate positions for constellation items - exact copy from original
 export function initializeConstellations(constellations: Constellation[]): ConstellationItem[] {
   const allItems: ConstellationItem[] = [];
-  
+
   constellations.forEach(constellation => {
     // Add constellation center
     const centerNode: ConstellationItem = {
@@ -58,63 +135,9 @@ export function initializeConstellations(constellations: Constellation[]): Const
       };
       allItems.push(fullItem);
       
-      // If this is a folder with children, add the children too (but don't show them initially)
+      // Recursively process children (handles nested folders)
       if (item.children && item.children.length > 0) {
-        const MAX_VISIBLE_CHILDREN = 10;
-        const childrenToShow = item.children.slice(0, MAX_VISIBLE_CHILDREN);
-        const hasMoreChildren = item.children.length > MAX_VISIBLE_CHILDREN;
-
-        childrenToShow.forEach(child => {
-          const childRadian = (child.angle * Math.PI) / 180;
-          const childX = x + Math.cos(childRadian) * child.distance;
-          const childY = y + Math.sin(childRadian) * child.distance;
-
-          const fullChild: ConstellationItem = {
-            ...child,
-            constellation: constellation.id,
-            x: childX,
-            y: childY,
-            color: constellation.color,
-            parentId: item.id,
-            depthLayer: 1.5, // Children come FORWARD when expanded (closer to user than parent at layer 2)
-            content: child.content || `This is a ${child.type} from ${item.title}. ${child.content || 'Part of your organized file structure.'}`,
-            tags: child.tags || [item.title.toLowerCase(), child.type]
-          };
-          allItems.push(fullChild);
-        });
-
-        // Add "show more" node if there are more than 10 children
-        if (hasMoreChildren) {
-          const remainingCount = item.children.length - MAX_VISIBLE_CHILDREN;
-          const moreNodeAngle = 360; // Place at bottom
-          const moreNodeRadian = (moreNodeAngle * Math.PI) / 180;
-          const moreNodeX = x + Math.cos(moreNodeRadian) * item.distance;
-          const moreNodeY = y + Math.sin(moreNodeRadian) * item.distance;
-
-          const moreNode: ConstellationItem = {
-            id: `${item.id}_more`,
-            title: `+${remainingCount} more`,
-            type: 'folder',
-            constellation: constellation.id,
-            importance: 3,
-            angle: moreNodeAngle,
-            distance: item.distance,
-            x: moreNodeX,
-            y: moreNodeY,
-            color: constellation.color,
-            parentId: item.id,
-            depthLayer: 3,
-            content: `View all ${item.children.length} items in ${item.title}`,
-            tags: ['overflow', 'more'],
-            icon: '📋',
-            isFolder: false,
-            // Custom property to identify this as an overflow node
-            isOverflowNode: true,
-            overflowParentId: item.id,
-            allChildren: item.children
-          };
-          allItems.push(moreNode);
-        }
+        processChildrenRecursively(item, { x, y }, constellation, allItems, 0);
       }
     });
   });

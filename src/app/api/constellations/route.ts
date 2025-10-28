@@ -2,6 +2,89 @@ import { NextResponse } from 'next/server';
 import pool from '@/lib/db';
 import { Constellation, ConstellationItem, ItemType } from '@/types/constellation';
 
+// Configuration for nested children fetching
+const CONFIG = {
+  MAX_VISIBLE_CHILDREN: 10,        // Children shown at constellation level
+  MAX_CHILDREN_PER_FOLDER: 50,     // Max children per folder at any level
+  MAX_NESTING_DEPTH: 5,            // Maximum folder nesting depth
+  ENABLE_NESTED_CHILDREN: true,    // Feature flag to enable/disable
+  MIN_ANGLE_SECTORS: 6             // Minimum sectors for angle calculation (prevents overlap)
+};
+
+// Recursive function to fetch all nested children from database
+async function fetchChildrenRecursive(
+  parentId: string,
+  constellationId: string,
+  depth: number = 0,
+  maxDepth: number = CONFIG.MAX_NESTING_DEPTH,
+  visited: Set<string> = new Set()
+): Promise<ConstellationItem[]> {
+  // Safety check: prevent infinite recursion
+  if (depth >= maxDepth) {
+    console.warn(`⚠️ Max depth ${maxDepth} reached for parent ${parentId}`);
+    return [];
+  }
+
+  // Circular reference prevention
+  if (visited.has(parentId)) {
+    console.error(`❌ Circular reference detected: ${parentId}`);
+    return [];
+  }
+  visited.add(parentId);
+
+  // Query database for direct children of this parent (using CONFIG limit)
+  const childrenQuery = `
+    SELECT id, type, name, path, color, icon, parent_id, metadata, content
+    FROM items
+    WHERE parent_id = $1
+      AND deleted_at IS NULL
+    ORDER BY position, name
+    LIMIT $2
+  `;
+
+  const childrenResult = await pool.query(childrenQuery, [parentId, CONFIG.MAX_CHILDREN_PER_FOLDER]);
+  const children = childrenResult.rows;
+
+  console.log(`📂 Depth ${depth}: Found ${children.length} children for parent ${parentId}`);
+
+  // Map children to ConstellationItem format
+  const items: ConstellationItem[] = [];
+
+  for (let index = 0; index < children.length; index++) {
+    const child = children[index];
+
+    // Use Math.max guard to prevent overlapping when < 6 children
+    const totalSiblings = children.length;
+    const minSectors = Math.max(totalSiblings, CONFIG.MIN_ANGLE_SECTORS);
+    const angle = (360 / minSectors) * index;
+    const distance = 70 + Math.random() * 30;
+
+    // Recursively fetch this child's children (if it's a folder)
+    const childChildren = child.type === 'folder'
+      ? await fetchChildrenRecursive(child.id, constellationId, depth + 1, maxDepth, new Set(visited))
+      : [];
+
+    items.push({
+      id: child.id,
+      title: child.name,
+      type: (child.type === 'folder' ? 'folder' : getItemType(child)) as ItemType,
+      importance: 3,
+      angle,
+      distance,
+      icon: child.icon || getDefaultIcon(child.type),
+      content: child.content,
+      tags: extractTags(child),
+      isFolder: child.type === 'folder',
+      children: childChildren, // ✅ Recursively fetched children
+      depthLayer: 2 + depth, // Increase depth layer with nesting
+      constellation: constellationId,
+      parentId: parentId // ⭐ CRITICAL: Set parentId for depth logic
+    });
+  }
+
+  return items;
+}
+
 export async function GET() {
   try {
     // First, fetch the knowledge-base root folder
@@ -70,40 +153,11 @@ export async function GET() {
       const countResult = await pool.query(countQuery, [folder.id]);
       const totalChildren = parseInt(countResult.rows[0].total);
 
-      // Fetch direct children of this folder (limited to 10)
-      const childrenQuery = `
-        SELECT id, type, name, path, color, icon, parent_id, metadata, content
-        FROM items
-        WHERE parent_id = $1
-          AND deleted_at IS NULL
-        ORDER BY position, name
-        LIMIT $2
-      `;
+      // Recursively fetch all nested children
+      const allItems: ConstellationItem[] = await fetchChildrenRecursive(folder.id, folder.id, 0);
 
-      const childrenResult = await pool.query(childrenQuery, [folder.id, MAX_VISIBLE_CHILDREN]);
-      const children = childrenResult.rows;
-
-      // Convert children to constellation items
-      const items: ConstellationItem[] = children.map((child: any, index: number) => {
-        const angle = (360 / Math.max(Math.min(totalChildren, MAX_VISIBLE_CHILDREN + 1), 6)) * index;
-        const distance = 70 + Math.random() * 30; // Random distance between 70-100
-
-        return {
-          id: child.id,
-          title: child.name,
-          type: (child.type === 'folder' ? 'folder' : getItemType(child)) as ItemType,
-          importance: 3,
-          angle,
-          distance,
-          icon: child.icon || getDefaultIcon(child.type),
-          content: child.content, // Use actual content from database
-          tags: extractTags(child),
-          isFolder: child.type === 'folder',
-          children: [], // We can add nested children later if needed
-          depthLayer: 2, // Subfolder contents pushed behind their parent constellation center
-          constellation: folder.id // Add constellation ID so we know which constellation this item belongs to
-        };
-      });
+      // ⭐ LIMIT to first 10 direct children only
+      const items: ConstellationItem[] = allItems.slice(0, MAX_VISIBLE_CHILDREN);
 
       // Add overflow node if there are more children than the limit
       if (totalChildren > MAX_VISIBLE_CHILDREN) {
