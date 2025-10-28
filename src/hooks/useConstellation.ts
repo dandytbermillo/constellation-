@@ -856,12 +856,6 @@ export function useConstellation() {
         logDepthCalculation(item.title, itemConstellation, 'expanded', true, 1.5);
         return 1.5; // Other centers step back behind children
       }
-
-      // ALL children of expanded constellation come forward (simplified - no nested distinction)
-      if (item.constellation === itemConstellation && !item.isCenter) {
-        logDepthCalculation(item.title, itemConstellation, 'expanded', true, 0);
-        return 0; // Children in front
-      }
     }
     // === END NEW ===
 
