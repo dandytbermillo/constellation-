@@ -16,8 +16,8 @@ interface ConstellationVisualizationProps {
   onItemHover: (item: ConstellationItem | null) => void;
   // New depth-related props
   getItemDepthLayer: (item: ConstellationItem) => number;
-  getDepthScale: (depthLayer: number) => number;
-  getDepthOpacity: (depthLayer: number) => number;
+  getDepthScale: (depthLayer: number, isCenter?: boolean) => number;
+  getDepthOpacity: (depthLayer: number, isCenter?: boolean) => number;
   getDepthBlur: (depthLayer: number) => string;
   getDepthZ: (depthLayer: number) => number;
   // Constellation focus props
@@ -80,8 +80,8 @@ export default function ConstellationVisualization({
     
     // Apply depth layer opacity
     const depthLayer = getItemDepthLayer(item);
-    const depthOpacity = getDepthOpacity(depthLayer);
-    
+    const depthOpacity = getDepthOpacity(depthLayer, item.isCenter);
+
     return baseOpacity * depthOpacity;
   }, [state.highlightedConstellation, state.filterType, state.searchQuery, getItemDepthLayer, getDepthOpacity]);
 
@@ -601,7 +601,7 @@ export default function ConstellationVisualization({
     })).sort((a, b) => b.pos.depth - a.pos.depth);
 
     sortedItems.forEach(({ item, pos, depthLayer }) => {
-      const depthScale = getDepthScale(depthLayer);
+      const depthScale = getDepthScale(depthLayer, item.isCenter);
       const baseSize = getItemSize(item);
       const size = baseSize * depthScale;
       const opacity = getItemOpacity(item);
@@ -908,22 +908,53 @@ export default function ConstellationVisualization({
       
       const item = allItems.find(i => i.id === itemId);
       if (!item) return;
-      
+
       // Check if item is groupable (folder OR constellation center)
       const isGroupable = isFolder || (item.isCenter && item.type === 'constellation');
-      
-      console.log('🎯 Delegated click:', item.title, 'Shift:', e.shiftKey, 'Type:', itemType, 'IsGroupable:', isGroupable);
-      
+
+      // Log click to database
+      fetch('/api/debug/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          component: 'ConstellationVisualization',
+          action: 'item_clicked',
+          content_preview: `Clicked: ${item.title}`,
+          metadata: {
+            itemId: item.id,
+            title: item.title,
+            shift: e.shiftKey,
+            type: itemType,
+            isGroupable,
+            isOverflowNode: item.isOverflowNode,
+            hasAllChildren: !!item.allChildren
+          }
+        })
+      });
+
       // Handle shift+click for groupable items (folders and constellation centers)
       if (e.shiftKey && isGroupable) {
-        console.log('📁 Shift+click on folder - triggering group selection');
         e.preventDefault();
         e.stopPropagation();
         onItemClick(item, e as any);
         return;
       }
-      
-      // Regular click
+
+      // Regular click - log before calling handler
+      fetch('/api/debug/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          component: 'ConstellationVisualization',
+          action: 'calling_onItemClick',
+          content_preview: `Calling handler for: ${item.title}`,
+          metadata: {
+            itemId: item.id,
+            isOverflowNode: item.isOverflowNode
+          }
+        })
+      });
+
       onItemClick(item, e as any);
     };
 
@@ -958,8 +989,26 @@ export default function ConstellationVisualization({
       // Check if item is groupable (folder OR constellation center)
       const isGroupable = isFolder || (item.isCenter && item.type === 'constellation');
       
-      console.log('🖱️ Delegated mousedown:', item.title, 'Shift:', e.shiftKey, 'IsFolder:', isFolder, 'IsGroupable:', isGroupable);
-      
+      console.log('🖱️ Delegated mousedown:', item.title, 'Shift:', e.shiftKey, 'IsFolder:', isFolder, 'IsGroupable:', isGroupable, 'IsOverflow:', item.isOverflowNode);
+
+      // Handle overflow nodes - call onItemClick immediately, no drag
+      if (item.isOverflowNode) {
+        console.log('📋 Overflow node in delegated mousedown - calling onItemClick immediately');
+        e.preventDefault();
+        e.stopPropagation();
+
+        // Call onItemClick directly (same pattern as shift+folder below)
+        onItemClick(item, {
+          shiftKey: e.shiftKey,
+          preventDefault: () => e.preventDefault(),
+          stopPropagation: () => e.stopPropagation(),
+          clientX: e.clientX,
+          clientY: e.clientY
+        } as any);
+
+        return;
+      }
+
       // Handle shift+groupable item in mousedown directly to avoid race condition
       if (e.shiftKey && isGroupable) {
         console.log('📁 Shift+folder mousedown - triggering group selection immediately');
@@ -1037,8 +1086,8 @@ export default function ConstellationVisualization({
       const depthLayer = getItemDepthLayer(item);
       const zPosition = getConstellationDepthZ(item, depthLayer); // Use getConstellationDepthZ to include global offset
       const pos = transformPoint(nodePos.x, nodePos.y, zPosition, state);
-      
-      const depthScale = getDepthScale(depthLayer);
+
+      const depthScale = getDepthScale(depthLayer, item.isCenter);
       const baseSize = getItemSize(item);
       const size = baseSize * depthScale;
       const opacity = getItemOpacity(item);
@@ -1061,11 +1110,14 @@ export default function ConstellationVisualization({
       label.setAttribute('y', (pos.y - size - 5).toString());
       label.setAttribute('text-anchor', 'middle');
       label.textContent = item.title;
-      label.setAttribute('opacity', Math.max(opacity * 0.9, 0.4).toString());
+
+      // Constellation centers always have full opacity labels for readability
+      const labelOpacity = item.isCenter ? 1.0 : Math.max(opacity * 0.9, 0.4);
+      label.setAttribute('opacity', labelOpacity.toString());
       
-      // Apply depth blur to labels too
+      // Apply depth blur to labels (but not to constellation centers)
       const depthBlur = getDepthBlur(depthLayer);
-      if (depthBlur !== 'none') {
+      if (depthBlur !== 'none' && !item.isCenter) {
         label.style.filter = depthBlur;
       } else {
         label.style.filter = 'none';
@@ -1092,7 +1144,10 @@ export default function ConstellationVisualization({
       
       // Show/hide based on state and depth
       const shouldShowLabel = state.showLabels || isHovered || state.selectedItem === item || isDragged || isFocused;
-      if (shouldShowLabel && depthLayer <= 2) { // Don't show labels for very distant items
+      // Always show labels for constellation centers, even when pushed back
+      const showForDepth = item.isCenter || depthLayer <= 2;
+
+      if (shouldShowLabel && showForDepth) {
         label.classList.remove('hidden');
       } else {
         label.classList.add('hidden');
@@ -1237,15 +1292,20 @@ export default function ConstellationVisualization({
               
               if (item) {
                 e.stopPropagation();
-                
+
+                // Special handling for overflow nodes
+                if (item.isOverflowNode) {
+                  console.log('📋 onClick detected overflow node:', item.title);
+                }
+
                 // Log what type of click this is
                 if (e.shiftKey) {
                   console.log('⇧ SHIFT+CLICK detected on:', item.title, 'Constellation:', item.constellation);
                 }
-                
+
                 // ALWAYS call onItemClick for ANY item when found
                 // The handler will determine what to do based on item type and modifiers
-                console.log('🔥 Calling onItemClick for:', item.title, 'with event, shiftKey:', e.shiftKey);
+                console.log('🔥 Calling onItemClick for:', item.title, 'with event, shiftKey:', e.shiftKey, 'isOverflowNode:', item.isOverflowNode);
                 onItemClick(item, e as any);
                 return;
               }
@@ -1286,9 +1346,9 @@ export default function ConstellationVisualization({
           </filter>
         </defs>
       </svg>
-      
-      {/* Enhanced hint overlay with depth instructions */}
-      {state.showHint && (
+
+      {/* Enhanced hint overlay with depth instructions - DISABLED per user request */}
+      {/* {state.showHint && (
         <div className="fixed top-5 right-5 z-40 bg-black/95 backdrop-blur-lg px-6 py-4 rounded-xl border border-blue-400/30 shadow-2xl pointer-events-none max-w-sm">
           <div className="text-blue-400 text-base font-medium mb-2">
             {state.hintText}
@@ -1303,7 +1363,7 @@ export default function ConstellationVisualization({
             )}
           </div>
         </div>
-      )}
+      )} */}
       
       {/* Debug panel showing all folders */}
       {state.showDebugPanel && (

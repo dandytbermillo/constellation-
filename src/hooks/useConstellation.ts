@@ -2,8 +2,8 @@
 
 import { useState, useCallback, useEffect, useRef, useReducer } from 'react';
 import { AppState, ConstellationItem, ItemType, Position, Constellation } from '@/types/constellation';
-import { initialConstellations, crossConstellationConnections } from '@/data/constellations';
 import { initializeConstellations, getNodeAtPosition, getDepthZ, getItemDepthLayer as getItemDepthLayerUtil, calculateHierarchyLevel, areAllAncestorsExpanded, getNodePosition as getNodePositionUtil, inverseTransformPoint } from '@/utils/constellation';
+import { logConstellationFocus, logDepthCalculation, logDoubleClick } from '@/utils/debugLog';
 
 // State machine types
 type SelectionState = 
@@ -55,10 +55,15 @@ const selectionReducer = (state: SelectionState, action: SelectionAction): Selec
 const initialState: AppState = {
   // View state
   rotation: { x: 0, y: 0 },
-  pan: { x: 0, y: 0 },
+  // Pan to center view on Knowledge Base (650, 350)
+  // Formula: pan = screenCenter - worldCenter
+  pan: {
+    x: (typeof window !== 'undefined' ? window.innerWidth / 2 : 960) - 650,
+    y: (typeof window !== 'undefined' ? window.innerHeight / 2 : 540) - 350
+  },
   zoom: 1,
-  centerX: typeof window !== 'undefined' ? window.innerWidth / 2 : 400,
-  centerY: typeof window !== 'undefined' ? window.innerHeight / 2 : 300,
+  centerX: typeof window !== 'undefined' ? window.innerWidth / 2 : 960,
+  centerY: typeof window !== 'undefined' ? window.innerHeight / 2 : 540,
   
   // Interaction state
   isDragging: false,
@@ -78,9 +83,10 @@ const initialState: AppState = {
   
   // Panel visibility state
   showWelcomePanel: true,
-  showSidebar: true,
+  showSidebar: false, // Hidden by default per user request
   showStatusPanel: true,
   showDebugPanel: false,
+  showSearchControls: false, // Hidden by default per user request
   
   // Selection and filtering
   selectedItem: null,
@@ -130,7 +136,9 @@ const initialState: AppState = {
 export function useConstellation() {
   const [selectionState, selectionDispatch] = useReducer(selectionReducer, { type: 'IDLE' });
   const [state, setState] = useState<AppState>(initialState);
-  const [constellations] = useState<Constellation[]>(initialConstellations);
+  const [constellations, setConstellations] = useState<Constellation[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [crossConstellationConnections, setCrossConstellationConnections] = useState<Array<[string, string]>>([]);
   const [allItems, setAllItems] = useState<ConstellationItem[]>([]);
   const [connections, setConnections] = useState<Array<[string, string]>>([]);
 
@@ -147,18 +155,60 @@ export function useConstellation() {
     isDraggingGroup: false
   });
 
+  // Double-click detection ref
+  const lastClickRef = useRef<{
+    itemId: string | null;
+    timestamp: number;
+  }>({
+    itemId: null,
+    timestamp: 0
+  });
+
+  // Single-click timeout ref for folders
+  const singleClickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Track if mouse has moved (to distinguish click from drag)
+  const mouseMovedRef = useRef<boolean>(false);
+
   // Define showHint early so it can be used in other effects
-  const showHint = useCallback((text: string, duration = 2000) => {
-    setState(prev => ({ ...prev, showHint: true, hintText: text }));
-    setTimeout(() => {
-      setState(prev => ({ ...prev, showHint: false }));
-    }, duration);
+  // DISABLED: All notifications disabled per user request
+  const showHint = useCallback((_text: string, _duration = 2000) => {
+    // Do nothing - notifications disabled
+    return;
   }, []);
 
 
 
+  // Fetch constellations from API
+  useEffect(() => {
+    async function fetchConstellations() {
+      try {
+        setIsLoading(true);
+        const response = await fetch('/api/constellations');
+        const data = await response.json();
+
+        if (data.success && data.constellations) {
+          console.log('✅ Fetched constellations from database:', data.constellations.length);
+          console.log('🔗 Cross-constellation connections:', data.crossConstellationConnections?.length || 0);
+          setConstellations(data.constellations);
+          setCrossConstellationConnections(data.crossConstellationConnections || []);
+        } else {
+          console.error('❌ Failed to fetch constellations:', data.error);
+        }
+      } catch (error) {
+        console.error('❌ Error fetching constellations:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    fetchConstellations();
+  }, []);
+
   // Initialize data - exact copy from original
   useEffect(() => {
+    if (constellations.length === 0) return; // Wait for data to be fetched
+
     const items = initializeConstellations(constellations);
     console.log('🌌 Initialized constellation items:', items.length);
     console.log('📁 Folders found:', items.filter(item => item.type === 'folder' || item.isFolder));
@@ -188,11 +238,12 @@ export function useConstellation() {
     // Log connection initialization for debugging
     console.log('🔗 Connections initialized:', {
       totalConnections: newConnections.length,
-      crossConstellationConnections: crossConstellationConnections.length
+      crossConstellationConnections: crossConstellationConnections.length,
+      constellationCenters: constellations.map(c => c.name)
     });
-    
+
     setConnections(newConnections);
-  }, [constellations]);
+  }, [constellations, crossConstellationConnections]);
 
   // Update center position on window resize
   useEffect(() => {
@@ -438,10 +489,33 @@ export function useConstellation() {
   // Remove old startGroupDrag function as it's replaced by state machine logic
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    // Check if user clicked a folder but hasn't started dragging yet
+    if (!state.isDragging && !state.isDraggingGravityCore && state.clickedNodeForExpansion) {
+      // User is trying to drag a folder - start the drag now
+      const deltaX = Math.abs(e.clientX - state.lastMousePos.x);
+      const deltaY = Math.abs(e.clientY - state.lastMousePos.y);
+
+      // Only start drag if moved more than 3px (avoid accidental drags)
+      if (deltaX > 3 || deltaY > 3) {
+        console.log('🎯 Starting folder drag on mouse move');
+        mouseMovedRef.current = true;
+        setState(prev => ({
+          ...prev,
+          isDragging: true,
+          dragMode: 'node',
+          draggedNode: prev.clickedNodeForExpansion
+        }));
+      }
+      return;
+    }
+
     if (!state.isDragging && !state.isDraggingGravityCore) return;
-    
+
+    // Track that mouse has moved (for click vs drag detection)
+    mouseMovedRef.current = true;
+
     // console.log('🖱️ Mouse move - dragging:', state.isDragging, 'gravity core:', state.isDraggingGravityCore, 'selection state:', selectionState.type);
-    
+
     const deltaX = e.clientX - state.lastMousePos.x;
     const deltaY = e.clientY - state.lastMousePos.y;
     
@@ -598,14 +672,14 @@ export function useConstellation() {
 
   const handleMouseUp = useCallback(() => {
     console.log('🖱️ Mouse up - was dragging:', state.isDragging, 'was gravity core:', state.isDraggingGravityCore, 'was group drag:', groupSelectionRef.current.isDraggingGroup);
-    
+
     // Complete group drag if we were dragging a group
     if (groupSelectionRef.current.isDraggingGroup) {
       groupSelectionRef.current.isDraggingGroup = false;
       console.log('📁 Group drag completed (ref updated)');
       selectionDispatch({ type: 'COMPLETE_DRAG' });
     }
-    
+
     updateState({
       isDragging: false,
       isDraggingGravityCore: false,
@@ -743,61 +817,121 @@ export function useConstellation() {
   const getItemDepthLayer = useCallback((item: ConstellationItem): number => {
     // Focused items always in foreground
     if (state.focusedItems.has(item.id)) {
-      // console.log('🎯 Item in focus:', item.title, '-> depth 0');
       return 0;
     }
-    
-    // Constellation centers always at layer 0
+
+    // Get the constellation this item belongs to
+    const itemConstellation = item.constellation || (item.isCenter ? item.id.replace('_center', '') : null);
+
+    // If a constellation is focused, adjust depths
+    if (state.focusedConstellation && itemConstellation) {
+      const isFocusedConstellation = itemConstellation === state.focusedConstellation;
+
+      if (isFocusedConstellation) {
+        // Items in focused constellation: maintain their relative depth but shift forward
+        // Constellation center → Layer 0
+        if (item.isCenter) {
+          logDepthCalculation(item.title, itemConstellation, state.focusedConstellation, true, 0);
+          return 0;
+        }
+
+        // Children of constellation center → Layer 1
+        if (item.depthLayer !== undefined) {
+          logDepthCalculation(item.title, itemConstellation, state.focusedConstellation, true, item.depthLayer);
+          return item.depthLayer;
+        }
+
+        const hierarchyLevel = calculateHierarchyLevel(item, allItems);
+
+        // For children, maintain hierarchy visibility
+        if (item.parentId) {
+          if (!areAllAncestorsExpanded(item, state.expandedConstellations, allItems)) {
+            logDepthCalculation(item.title, itemConstellation, state.focusedConstellation, true, 999);
+            return 999; // Hidden
+          }
+          logDepthCalculation(item.title, itemConstellation, state.focusedConstellation, true, hierarchyLevel);
+          return hierarchyLevel; // Maintain relative depth within constellation
+        }
+
+        logDepthCalculation(item.title, itemConstellation, state.focusedConstellation, true, hierarchyLevel);
+        return hierarchyLevel;
+      } else {
+        // Items NOT in focused constellation: push back by 2+ layers
+        const baseDepthLayer = getBaseDepthLayer(item);
+        const pushedBackLayer = baseDepthLayer + 2;
+        logDepthCalculation(item.title, itemConstellation, state.focusedConstellation, false, pushedBackLayer);
+        return pushedBackLayer; // Push back significantly
+      }
+    }
+
+    // No constellation focus - use normal depth calculation
+    return getBaseDepthLayer(item);
+  }, [state.expandedConstellations, state.focusedItems, state.focusedConstellation, allItems]);
+
+  // Helper function for base depth calculation (normal behavior)
+  const getBaseDepthLayer = useCallback((item: ConstellationItem): number => {
+    // Constellation centers use their assigned depth layer
     if (item.isCenter) {
-      return 0;
+      return item.depthLayer !== undefined ? item.depthLayer : 0;
     }
-    
-    // Calculate hierarchy level
+
+    // Use explicitly assigned depth layer if present
+    if (item.depthLayer !== undefined) {
+      return item.depthLayer;
+    }
+
+    // Calculate hierarchy level for items without explicit depth
     const hierarchyLevel = calculateHierarchyLevel(item, allItems);
-    // console.log('📊 Hierarchy level for', item.title, ':', hierarchyLevel);
-    
+
     // For items with parents, check if they should be visible
     if (item.parentId) {
       // Check if all ancestors are expanded
       if (!areAllAncestorsExpanded(item, state.expandedConstellations, allItems)) {
-        // console.log('❌ Item hidden (ancestors not expanded):', item.title, '-> depth 999');
         return 999; // Hidden layer
       }
-      
-      // FIXED: Push children AWAY from user based on hierarchy
-      // Hierarchy level 2 → depth 2, level 3 → depth 3, etc.
-      // console.log('✅ Child item visible:', item.title, '-> depth', hierarchyLevel);
+
+      // Push children AWAY from user based on hierarchy
       return hierarchyLevel;
     }
-    
-    // Root folders and regular items stay at layer 1
+
+    // Root folders and regular items stay at layer 1 (fallback)
     if ((item.type === 'folder' || item.isFolder) && hierarchyLevel === 1) {
-      // console.log('📁 Root folder:', item.title, '-> depth 1');
       return 1;
     }
-    
-    // Regular constellation items at layer 1
-    // console.log('📄 Regular item:', item.title, '-> depth 1');
-    return 1;
-  }, [state.expandedConstellations, state.focusedItems, allItems]);
 
-  const getDepthScale = useCallback((depthLayer: number): number => {
+    // Regular constellation items at layer 1 (fallback)
+    return 1;
+  }, [state.expandedConstellations, allItems]);
+
+  const getDepthScale = useCallback((depthLayer: number, isCenter: boolean = false): number => {
     if (depthLayer === 0) return 1.0;      // Constellation centers - full size
     if (depthLayer === 1) return 0.95;     // Root items - nearly full size
     if (depthLayer >= 999) return 0.0;     // Hidden items
-    
-    // More aggressive scaling for deeper layers
-    // Each layer is 80% of the previous (more noticeable)
+
+    // Constellation centers should stay larger even when pushed back (for labels)
+    if (isCenter) {
+      // Less aggressive scaling for constellation centers
+      const scaleFactor = 0.9; // 90% per layer instead of 80%
+      return Math.max(0.75, Math.pow(scaleFactor, depthLayer - 1)); // Minimum 75% size
+    }
+
+    // More aggressive scaling for regular items
     const scaleFactor = 0.8;
     return Math.pow(scaleFactor, depthLayer - 1);
   }, []);
 
-  const getDepthOpacity = useCallback((depthLayer: number): number => {
+  const getDepthOpacity = useCallback((depthLayer: number, isCenter: boolean = false): number => {
     if (depthLayer === 0) return 1.0;      // Full opacity
     if (depthLayer === 1) return 0.95;     // Root items - nearly full opacity
     if (depthLayer >= 999) return 0.0;     // Hidden
-    
-    // More noticeable opacity reduction
+
+    // Constellation centers should stay more visible (for labels)
+    if (isCenter) {
+      const opacityFactor = 0.9; // Less opacity reduction for centers
+      return Math.max(0.6, Math.pow(opacityFactor, depthLayer - 1)); // Minimum 60% opacity
+    }
+
+    // More noticeable opacity reduction for regular items
     const opacityFactor = 0.85; // Each layer is 85% opacity of previous
     return Math.pow(opacityFactor, depthLayer - 1);
   }, []);
@@ -814,9 +948,10 @@ export function useConstellation() {
 
   const getDepthZ = useCallback((depthLayer: number): number => {
     if (depthLayer >= 999) return -2000;   // Far back for hidden
-    
-    // Each layer is 100 units back in Z-space (more separation)
-    return -depthLayer * 100;
+
+    // Each layer is 150 units back in Z-space (dramatic separation)
+    // Layer 0: 0, Layer 1: -150, Layer 2: -300, etc.
+    return -depthLayer * 150;
   }, []);
 
   // New function to get constellation-adjusted Z position with global depth offset
@@ -851,26 +986,85 @@ export function useConstellation() {
     return z;
   }, [state.constellationDepthOffsets, state.globalDepthOffset, getDepthZ]);
 
+  // Bring constellation to front (Focus Mode)
+  const bringConstellationToFront = useCallback((folderId: string) => {
+    const folderItem = allItems.find(item => item.id === folderId);
+    if (!folderItem) {
+      return;
+    }
+
+    // Find which constellation this folder belongs to
+    // First try the constellation property
+    let itemConstellation = folderItem.constellation;
+
+    // If constellation property is not set, check if this folder IS a constellation
+    if (!itemConstellation) {
+      const matchingConstellation = constellations.find(c => c.id === folderId);
+      if (matchingConstellation) {
+        itemConstellation = matchingConstellation.id;
+      }
+    }
+
+    // For constellation centers
+    if (!itemConstellation && folderItem.isCenter) {
+      itemConstellation = folderItem.id.replace('_center', '');
+    }
+
+    if (!itemConstellation) {
+      return;
+    }
+
+    setState((prevState: AppState) => {
+      // If clicking the same constellation, unfocus it
+      if (prevState.focusedConstellation === itemConstellation) {
+        logConstellationFocus(folderId, folderItem.title, itemConstellation, 'unfocus');
+        showHint(`${folderItem.title} returned to normal view`, 2000);
+        return {
+          ...prevState,
+          focusedConstellation: null,
+          focusTransitionActive: true
+        };
+      }
+
+      // Focus the new constellation
+      logConstellationFocus(folderId, folderItem.title, itemConstellation, 'focus');
+      showHint(`${folderItem.title} brought to front`, 2000);
+      return {
+        ...prevState,
+        focusedConstellation: itemConstellation,
+        focusTransitionActive: true
+      };
+    });
+
+    // Turn off animation after transition
+    setTimeout(() => {
+      setState(prevState => ({
+        ...prevState,
+        focusTransitionActive: false
+      }));
+    }, 600);
+  }, [allItems, constellations, showHint]);
+
   // Enhanced folder expansion logic for nested folders
   const toggleConstellationExpansion = useCallback((folderId: string) => {
     console.log('🔄 toggleConstellationExpansion called with ID:', folderId);
-    
+
     // Add immediate visual feedback
     const folderItem = allItems.find(item => item.id === folderId);
     if (folderItem) {
       const isCurrentlyExpanded = state.expandedConstellations.has(folderId);
       showHint(`${folderItem.title}: ${isCurrentlyExpanded ? 'Collapsing...' : 'Expanding...'}`, 1000);
     }
-    
+
     setState((prevState: AppState) => {
       const newExpanded = new Set(prevState.expandedConstellations);
       const wasExpanded = newExpanded.has(folderId);
-      
+
       if (wasExpanded) {
         // Collapsing: also collapse all descendant folders
         newExpanded.delete(folderId);
         console.log('📁 Collapsing folder:', folderId);
-        
+
         // Find and collapse all descendant folders
         const collapseDescendants = (parentId: string) => {
           allItems.forEach(item => {
@@ -882,22 +1076,22 @@ export function useConstellation() {
           });
         };
         collapseDescendants(folderId);
-        
+
       } else {
         // Expanding: just expand this folder
         newExpanded.add(folderId);
         console.log('📂 Expanding folder:', folderId);
       }
-      
+
       console.log('📋 Current expanded folders:', Array.from(newExpanded));
-      
+
       return {
         ...prevState,
         expandedConstellations: newExpanded,
         depthAnimationActive: true
       };
     });
-    
+
     // Turn off animation after it completes
     setTimeout(() => {
       setState(prevState => ({
@@ -936,9 +1130,16 @@ export function useConstellation() {
     if (!event?.shiftKey && selectionState.type !== 'IDLE') {
       clearGroupSelection();
     }
-    
-    // Handle folder expansion
+
+    // Overflow nodes should not reach here - they should be handled by page.tsx wrapper
+    // If they do reach here, just return to avoid any unwanted behavior
+    if (item.isOverflowNode) {
+      console.log('⚠️ Overflow node reached handleItemClickWithDepth - this should be handled by page.tsx wrapper');
+      return;
+    }
+
     if (item.type === 'folder' || item.isFolder) {
+      // Handle folder expansion (only for non-overflow folders)
       console.log('📁 Expanding folder:', item.title, 'ID:', item.id);
       toggleConstellationExpansion(item.id);
       return;
@@ -967,19 +1168,111 @@ export function useConstellation() {
     if (e.nodeId && e.nodeItem) {
       const itemId = e.nodeId;
       const item = e.nodeItem;
-      
+
+      // Detect double-click using time-based approach
+      const now = Date.now();
+      const timeSinceLastClick = now - lastClickRef.current.timestamp;
+      const isDoubleClick = lastClickRef.current.itemId === itemId && timeSinceLastClick < 300; // 300ms threshold
+
+      // Log double-click detection
+      logDoubleClick(itemId, item.title, timeSinceLastClick, isDoubleClick);
+
+      if (isDoubleClick) {
+        // This is a double-click!
+
+        // Clear any pending single-click timeout
+        if (singleClickTimeoutRef.current) {
+          clearTimeout(singleClickTimeoutRef.current);
+          singleClickTimeoutRef.current = null;
+        }
+
+        // Reset the click tracker
+        lastClickRef.current = { itemId: null, timestamp: 0 };
+
+        // Handle folder/constellation center double-click
+        // BUT NOT for overflow nodes - they should only respond to single clicks
+        if ((item.type === 'folder' || item.isFolder || item.isCenter) && !item.isOverflowNode) {
+          e.preventDefault();
+
+          // Check if it's the root directory (Knowledge Base center)
+          const isRootDirectory = item.isCenter && item.id.includes('virtual-knowledge-base') || item.title === 'Knowledge Base';
+
+          if (isRootDirectory) {
+            // Root directory: just expand/collapse
+            toggleConstellationExpansion(itemId);
+          } else {
+            // Non-root folder/constellation: bring constellation to front (Focus Mode)
+            bringConstellationToFront(itemId);
+          }
+          return;
+        }
+      }
+
+      // Update last click tracker
+      lastClickRef.current = { itemId, timestamp: now };
+
+      // For folders (including overflow nodes), we need to handle both clicking and dragging
+      // Note: Overflow nodes will be handled differently in handleItemClickWithDepth
+      if (item.type === 'folder' || item.isFolder) {
+        // Clear any existing timeout
+        if (singleClickTimeoutRef.current) {
+          clearTimeout(singleClickTimeoutRef.current);
+        }
+
+        e.preventDefault();
+
+        // Store initial position for drag detection
+        const initialX = e.clientX;
+        const initialY = e.clientY;
+
+        // Reset mouse moved flag
+        mouseMovedRef.current = false;
+
+        // Set a timeout to handle single-click (expand/collapse) after double-click window
+        singleClickTimeoutRef.current = setTimeout(() => {
+          // Only expand if mouse hasn't moved (not a drag)
+          if (!mouseMovedRef.current) {
+            console.log('📁 Single-click timeout expired - expanding folder:', item.title);
+            toggleConstellationExpansion(itemId);
+          } else {
+            console.log('📁 Single-click timeout expired - but user dragged, skipping expansion');
+          }
+          singleClickTimeoutRef.current = null;
+        }, 310); // Slightly longer than double-click threshold
+
+        // Store position for potential drag, but don't start dragging yet
+        setState(prev => ({
+          ...prev,
+          lastMousePos: { x: initialX, y: initialY },
+          clickedNodeForExpansion: itemId
+        }));
+
+        return;
+      }
+
+      // Check if this is an overflow node - don't handle in mousedown at all
+      // Let it fall through to the regular SVG onClick handler
+      if (item.isOverflowNode) {
+        console.log('📋 Overflow node mousedown - skipping drag, preventing bubbling to canvas');
+        // Prevent the event from reaching the canvas drag handler
+        e.preventDefault();
+        e.stopPropagation();
+        // The SVG onClick will still fire and call onItemClick which goes to page.tsx wrapper
+        return;
+      }
+
       // Check ref state directly (synchronous, no race condition)
-      if (groupSelectionRef.current.isGroupSelected && 
+      if (groupSelectionRef.current.isGroupSelected &&
           groupSelectionRef.current.groupItems.has(itemId)) {
-        
+
         console.log('✅ Starting group drag for', groupSelectionRef.current.groupItems.size, 'items (ref-based detection)');
-        
+
         // Update ref to indicate we're now dragging
         groupSelectionRef.current.isDraggingGroup = true;
-        
+
         // Update state machine for consistency
         selectionDispatch({ type: 'START_GROUP_DRAG', itemId });
-        
+
           e.preventDefault();
         setState(prev => ({
           ...prev,
@@ -989,20 +1282,12 @@ export function useConstellation() {
           lastMousePos: { x: e.clientX, y: e.clientY },
           clickedNodeForExpansion: null
         }));
-        
+
         showHint(`Dragging group: ${groupSelectionRef.current.groupItems.size} items`, 3000);
           return;
         }
-      
-      // Handle folder double-click
-      if ((item.type === 'folder' || item.isFolder) && e.detail === 2) {
-        console.log('📁 Double-click folder expansion');
-        e.preventDefault();
-        toggleConstellationExpansion(itemId);
-        return;
-      }
-      
-      // Start individual drag
+
+      // Start individual drag for non-folders
       console.log('🎯 Starting individual drag for:', item.title);
       e.preventDefault();
       setState(prev => ({
@@ -1013,11 +1298,8 @@ export function useConstellation() {
         lastMousePos: { x: e.clientX, y: e.clientY },
         clickedNodeForExpansion: null
       }));
-      
-      const hint = (item.type === 'folder' || item.isFolder)
-        ? `Dragging: ${item.title} (Shift+click to select group)`
-        : `Dragging: ${item.title}`;
-      showHint(hint, 2000);
+
+      showHint(`Dragging: ${item.title}`, 2000);
       return;
     }
     
@@ -1033,7 +1315,7 @@ export function useConstellation() {
       draggedNode: null
     }));
     showHint(dragMode === 'pan' ? 'Panning view' : 'Rotating constellation', 1500);
-  }, [showHint, toggleConstellationExpansion]);
+  }, [showHint, toggleConstellationExpansion, bringConstellationToFront]);
 
   // Gravity Core Control Handlers
   const toggleGravityCore = useCallback(() => {
@@ -1094,22 +1376,20 @@ export function useConstellation() {
         if (groupSelectionRef.current.isGroupSelected) {
           clearGroupSelection();
           showHint('Group selection cleared', 1500);
-        } else if (state.focusedConstellation || Object.keys(state.constellationDepthOffsets).length > 0) {
-        setState(prevState => ({
-          ...prevState,
-          focusedConstellation: null,
-          constellationDepthOffsets: {},
-          constellationFocusLevels: {},
-          focusTransitionActive: true
-        }));
-        showHint('All constellations returned to normal view', 1500);
-        
-        setTimeout(() => {
+        } else if (state.focusedConstellation) {
           setState(prevState => ({
             ...prevState,
-            focusTransitionActive: false
+            focusedConstellation: null,
+            focusTransitionActive: true
           }));
-        }, 800);
+          showHint('Constellation focus cleared - all returned to normal view', 2000);
+
+          setTimeout(() => {
+            setState(prevState => ({
+              ...prevState,
+              focusTransitionActive: false
+            }));
+          }, 600);
         }
       }
       
@@ -1175,6 +1455,13 @@ export function useConstellation() {
     }));
   }, []);
 
+  const toggleSearchControls = useCallback(() => {
+    setState(prevState => ({
+      ...prevState,
+      showSearchControls: !prevState.showSearchControls
+    }));
+  }, []);
+
   const closeWelcomePanel = useCallback(() => {
     setState(prevState => ({
       ...prevState,
@@ -1200,6 +1487,13 @@ export function useConstellation() {
     setState(prevState => ({
       ...prevState,
       showDebugPanel: false
+    }));
+  }, []);
+
+  const closeSearchControls = useCallback(() => {
+    setState(prevState => ({
+      ...prevState,
+      showSearchControls: false
     }));
   }, []);
 
@@ -1257,6 +1551,7 @@ export function useConstellation() {
     constellations,
     allItems,
     connections,
+    isLoading,
     updateState,
     getNodePosition,
     updateNodePosition,
@@ -1285,10 +1580,12 @@ export function useConstellation() {
     toggleSidebar,
     toggleStatusPanel,
     toggleDebugPanel,
+    toggleSearchControls,
     closeWelcomePanel,
     closeSidebar,
     closeStatusPanel,
     closeDebugPanel,
+    closeSearchControls,
     // Gravity Core Control functions
     toggleGravityCore,
     toggleGravityCoreLock,
@@ -1298,5 +1595,7 @@ export function useConstellation() {
     handleGroupSelection,
     clearGroupSelection,
     getAllDescendants,
+    // Constellation focus function
+    bringConstellationToFront,
   };
 } 

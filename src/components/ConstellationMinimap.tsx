@@ -45,9 +45,10 @@ const ConstellationMinimap: React.FC<ConstellationMinimapProps> = ({
   const [isDraggingMinimap, setIsDraggingMinimap] = useState(false);
   const [minimapDragStart, setMinimapDragStart] = useState<Position>({ x: 0, y: 0 });
   const [initialViewportOffset, setInitialViewportOffset] = useState<Position>({ x: 0, y: 0 });
-  
+
   // Use ref for immediate access to minimap dragging state
   const isMinimapDraggingRef = useRef(false);
+  const dragPanOffsetRef = useRef<Position>({ x: 0, y: 0 });
   
   // Shift+hover preview functionality
   const [isShiftPressed, setIsShiftPressed] = useState(false);
@@ -96,28 +97,52 @@ const ConstellationMinimap: React.FC<ConstellationMinimapProps> = ({
     return getNodePosition(item, state.nodePositions, allItems);
   }, [draggedPositions, state.nodePositions, allItems]);
 
-  // Calculate bounds of all items - FIXED: Use world coordinates only
+  // Calculate current viewport first to include it in bounds
+  const viewport = useMemo(() => {
+    const viewWidth = (typeof window !== 'undefined' ? window.innerWidth : 1920) / state.zoom;
+    const viewHeight = (typeof window !== 'undefined' ? window.innerHeight : 1080) / state.zoom;
+
+    // Transform: screen_x = world_x + pan.x (when zoom=1)
+    // So world_x at screen center: world_x = centerX - pan.x
+    const viewCenterWorldX = state.centerX - (state.pan?.x || 0);
+    const viewCenterWorldY = state.centerY - (state.pan?.y || 0);
+
+    return {
+      x: viewCenterWorldX - viewWidth / 2,
+      y: viewCenterWorldY - viewHeight / 2,
+      width: viewWidth,
+      height: viewHeight
+    };
+  }, [state.centerX, state.centerY, state.pan, state.zoom]);
+
+  // Calculate bounds of all items including viewport area
   const bounds = useMemo(() => {
     if (allItems.length === 0) {
       return { minX: -500, maxX: 500, minY: -500, maxY: 500 };
     }
-    
+
     let minX = Infinity;
     let maxX = -Infinity;
     let minY = Infinity;
     let maxY = -Infinity;
-    
+
     allItems.forEach(item => {
       // Use world coordinates only - no 3D transformations
       const worldPos = getItemPosition(item);
-      
+
       minX = Math.min(minX, worldPos.x);
       maxX = Math.max(maxX, worldPos.x);
       minY = Math.min(minY, worldPos.y);
       maxY = Math.max(maxY, worldPos.y);
     });
-    
-    // Add padding
+
+    // Include viewport bounds to ensure it's never clipped
+    minX = Math.min(minX, viewport.x);
+    maxX = Math.max(maxX, viewport.x + viewport.width);
+    minY = Math.min(minY, viewport.y);
+    maxY = Math.max(maxY, viewport.y + viewport.height);
+
+    // Add padding for visual breathing room
     const padding = 100;
     return {
       minX: minX - padding,
@@ -125,7 +150,7 @@ const ConstellationMinimap: React.FC<ConstellationMinimapProps> = ({
       minY: minY - padding,
       maxY: maxY + padding
     };
-  }, [allItems, getItemPosition]);
+  }, [allItems, getItemPosition, viewport]);
 
   // Calculate scale to fit all items in minimap
   const scale = useMemo(() => {
@@ -152,19 +177,6 @@ const ConstellationMinimap: React.FC<ConstellationMinimapProps> = ({
       y: (minimapY - minimapPadding) / scale + bounds.minY
     };
   }, [bounds, scale, minimapPadding]);
-
-  // Calculate current viewport
-  const viewport = useMemo(() => {
-    const viewWidth = (typeof window !== 'undefined' ? window.innerWidth : 1920) / state.zoom;
-    const viewHeight = (typeof window !== 'undefined' ? window.innerHeight : 1080) / state.zoom;
-    
-    return {
-      x: state.centerX - viewWidth / 2,
-      y: state.centerY - viewHeight / 2,
-      width: viewWidth,
-      height: viewHeight
-    };
-  }, [state.centerX, state.centerY, state.zoom]);
 
   // Find item at minimap position - FIXED: Use world coordinates only
   const getItemAtMinimapPosition = useCallback((minimapX: number, minimapY: number) => {
@@ -231,19 +243,27 @@ const ConstellationMinimap: React.FC<ConstellationMinimapProps> = ({
     
     if (isInViewport) {
       // Start dragging viewport
-      console.log('🗺️ Starting minimap drag');
       setIsDraggingMinimap(true);
       isMinimapDraggingRef.current = true;
       setMinimapDragStart({ x: minimapX, y: minimapY });
-      setInitialViewportOffset({ x: state.centerX, y: state.centerY });
+
+      // Capture the pan offset at drag start for consistent calculations
+      const panX = state.pan?.x || 0;
+      const panY = state.pan?.y || 0;
+      dragPanOffsetRef.current = { x: panX, y: panY };
+
+      // Store the actual viewport center in world coordinates
+      const viewCenterWorldX = state.centerX - panX;
+      const viewCenterWorldY = state.centerY - panY;
+      setInitialViewportOffset({ x: viewCenterWorldX, y: viewCenterWorldY });
     } else {
       // Click outside viewport - navigate to position
       const worldPos = minimapToWorld(minimapX, minimapY);
       onNavigate(worldPos.x, worldPos.y);
     }
-    
+
     event.preventDefault();
-  }, [worldToMinimap, minimapToWorld, viewport, scale, state.centerX, state.centerY, onNavigate]);
+  }, [worldToMinimap, minimapToWorld, viewport, scale, state.centerX, state.centerY, state.pan, onNavigate]);
 
   // Handle minimap mouse move for viewport dragging
   const handleMinimapMouseMove = useCallback((event: MouseEvent) => {
@@ -261,18 +281,21 @@ const ConstellationMinimap: React.FC<ConstellationMinimapProps> = ({
     
     const deltaWorldX = deltaMinimapX / scale;
     const deltaWorldY = deltaMinimapY / scale;
-    
-    // FIXED: Update center position properly accounting for view transform
-    const newCenterX = initialViewportOffset.x + deltaWorldX;
-    const newCenterY = initialViewportOffset.y + deltaWorldY;
-    
-    // Don't adjust pan when dragging viewport - just update center
+
+    // Calculate new viewport center in world coordinates
+    const newViewportWorldX = initialViewportOffset.x + deltaWorldX;
+    const newViewportWorldY = initialViewportOffset.y + deltaWorldY;
+
+    // Convert to state.centerX by adding back the captured pan offset
+    // viewport_world = centerX - pan, so centerX = viewport_world + pan
+    const newCenterX = newViewportWorldX + dragPanOffsetRef.current.x;
+    const newCenterY = newViewportWorldY + dragPanOffsetRef.current.y;
+
     onNavigate(newCenterX, newCenterY);
   }, [isDraggingMinimap, minimapDragStart, scale, initialViewportOffset, onNavigate]);
 
   // Handle minimap mouse up
   const handleMinimapMouseUp = useCallback(() => {
-    console.log('🗺️ Minimap mouse up - stopping drag');
     setIsDraggingMinimap(false);
   }, []);
 
@@ -290,19 +313,23 @@ const ConstellationMinimap: React.FC<ConstellationMinimapProps> = ({
       
       const deltaMinimapX = currentMinimapX - minimapDragStart.x;
       const deltaMinimapY = currentMinimapY - minimapDragStart.y;
-      
+
       const deltaWorldX = deltaMinimapX / scale;
       const deltaWorldY = deltaMinimapY / scale;
-      
-      const newCenterX = initialViewportOffset.x + deltaWorldX;
-      const newCenterY = initialViewportOffset.y + deltaWorldY;
-      
+
+      // Calculate new viewport center in world coordinates
+      const newViewportWorldX = initialViewportOffset.x + deltaWorldX;
+      const newViewportWorldY = initialViewportOffset.y + deltaWorldY;
+
+      // Convert to state.centerX by adding back the captured pan offset
+      const newCenterX = newViewportWorldX + dragPanOffsetRef.current.x;
+      const newCenterY = newViewportWorldY + dragPanOffsetRef.current.y;
+
       onNavigate(newCenterX, newCenterY);
     };
 
     const handleMouseUp = (event: MouseEvent) => {
       if (isMinimapDraggingRef.current) {
-        console.log('🗺️ Global mouse up - stopping minimap drag');
         isMinimapDraggingRef.current = false;
         setIsDraggingMinimap(false);
         event.preventDefault();
@@ -311,12 +338,10 @@ const ConstellationMinimap: React.FC<ConstellationMinimapProps> = ({
     };
 
     if (isDraggingMinimap) {
-      console.log('🗺️ Adding global mouse listeners');
       document.addEventListener('mousemove', handleMouseMove, { capture: true });
       document.addEventListener('mouseup', handleMouseUp, { capture: true });
-      
+
       return () => {
-        console.log('🗺️ Removing global mouse listeners');
         document.removeEventListener('mousemove', handleMouseMove, { capture: true });
         document.removeEventListener('mouseup', handleMouseUp, { capture: true });
       };
@@ -326,7 +351,6 @@ const ConstellationMinimap: React.FC<ConstellationMinimapProps> = ({
   // Emergency cleanup on unmount
   useEffect(() => {
     return () => {
-      console.log('🗺️ Component unmount - ensuring drag state is clean');
       isMinimapDraggingRef.current = false;
       setIsDraggingMinimap(false);
     };

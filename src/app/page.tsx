@@ -11,8 +11,10 @@ import NotificationContainer from '@/components/NotificationContainer';
 import GravityCore from '@/components/GravityCore';
 import ConstellationMinimap from '@/components/ConstellationMinimap';
 import ConnectionTooltip from '@/components/ConnectionTooltip';
+import FolderContentsModal from '@/components/FolderContentsModal';
 import { ConstellationErrorBoundary } from '@/components/ConstellationErrorBoundary';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { ConstellationItem } from '@/types/constellation';
 
 export default function ConstellationPage() {
   const {
@@ -20,6 +22,7 @@ export default function ConstellationPage() {
     constellations,
     allItems,
     connections,
+    isLoading,
     handleSearch,
     handleTypeFilter,
     handleConstellationHighlight,
@@ -43,10 +46,12 @@ export default function ConstellationPage() {
     toggleSidebar,
     toggleStatusPanel,
     toggleDebugPanel,
+    toggleSearchControls,
     closeWelcomePanel,
     closeSidebar,
     closeStatusPanel,
     closeDebugPanel,
+    closeSearchControls,
     // Gravity Core Control functions
     toggleGravityCore,
     toggleGravityCoreLock,
@@ -72,9 +77,152 @@ export default function ConstellationPage() {
   const [showMinimap, setShowMinimap] = useState(true);
   const [draggedPositions, setDraggedPositions] = useState<Record<string, { x: number; y: number }>>({});
 
+  // Panel Controls drag state
+  const [panelControlsPosition, setPanelControlsPosition] = useState({
+    x: typeof window !== 'undefined' ? window.innerWidth - 220 : 1100,
+    y: 120
+  });
+  const [isDraggingPanelControls, setIsDraggingPanelControls] = useState(false);
+  const [panelControlsDragStart, setPanelControlsDragStart] = useState({ x: 0, y: 0 });
+
+  // Folder contents modal state
+  const [showFolderModal, setShowFolderModal] = useState(false);
+  const [modalFolderName, setModalFolderName] = useState('');
+  const [modalFolderItems, setModalFolderItems] = useState<ConstellationItem[]>([]);
+
+  // Handler for overflow node clicks
+  const handleOverflowNodeClick = async (item: ConstellationItem) => {
+    console.log('📋 handleOverflowNodeClick called for:', item.title);
+
+    // Log the click attempt
+    await fetch('/api/debug/log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        component: 'OverflowNodeClick',
+        action: 'click_detected',
+        content_preview: `Clicked: ${item.title}`,
+        metadata: {
+          itemId: item.id,
+          itemTitle: item.title,
+          isOverflowNode: item.isOverflowNode,
+          hasAllChildren: !!item.allChildren,
+          allChildrenCount: item.allChildren?.length,
+          overflowParentId: item.overflowParentId
+        }
+      })
+    });
+
+    if (item.isOverflowNode && item.allChildren && item.overflowParentId) {
+      // Find the parent folder
+      const parentFolder = allItems.find(i => i.id === item.overflowParentId);
+
+      await fetch('/api/debug/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          component: 'OverflowNodeClick',
+          action: 'opening_modal',
+          content_preview: `Opening modal for: ${parentFolder?.title || 'unknown'}`,
+          metadata: {
+            parentFolderId: item.overflowParentId,
+            parentFolderTitle: parentFolder?.title,
+            itemsCount: item.allChildren.length
+          }
+        })
+      });
+
+      if (parentFolder) {
+        setModalFolderName(parentFolder.title);
+        setModalFolderItems(item.allChildren);
+        setShowFolderModal(true);
+
+        await fetch('/api/debug/log', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            component: 'OverflowNodeClick',
+            action: 'modal_opened',
+            content_preview: `Modal opened successfully`,
+            metadata: {
+              folderName: parentFolder.title,
+              itemsCount: item.allChildren.length,
+              showModal: true
+            }
+          })
+        });
+      }
+    } else {
+      await fetch('/api/debug/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          component: 'OverflowNodeClick',
+          action: 'normal_item_click',
+          content_preview: `Not an overflow node: ${item.title}`,
+          metadata: {
+            itemType: item.type,
+            isFolder: item.isFolder
+          }
+        })
+      });
+
+      // Normal item click - pass to original handler
+      handleItemClickWithDepth(item);
+    }
+  };
+
+  // Wrapper that checks for overflow nodes before calling the regular handler
+  const handleItemClickWrapper = (item: ConstellationItem, event?: React.MouseEvent) => {
+    console.log('🎯 handleItemClickWrapper called for:', item.title, 'isOverflowNode:', item.isOverflowNode);
+
+    if (item.isOverflowNode) {
+      handleOverflowNodeClick(item);
+    } else {
+      handleItemClickWithDepth(item, event);
+    }
+  };
+
   const handleConnectionHover = (connectionInfo: any) => {
     setConnectionTooltip(connectionInfo);
   };
+
+  // Panel Controls drag handlers
+  const handlePanelControlsMouseDown = (e: React.MouseEvent) => {
+    // Only start dragging if clicking on the header area
+    if ((e.target as HTMLElement).classList.contains('panel-controls-header')) {
+      setIsDraggingPanelControls(true);
+      setPanelControlsDragStart({
+        x: e.clientX - panelControlsPosition.x,
+        y: e.clientY - panelControlsPosition.y
+      });
+    }
+  };
+
+  const handlePanelControlsMouseMove = (e: MouseEvent) => {
+    if (isDraggingPanelControls) {
+      setPanelControlsPosition({
+        x: e.clientX - panelControlsDragStart.x,
+        y: e.clientY - panelControlsDragStart.y
+      });
+    }
+  };
+
+  const handlePanelControlsMouseUp = () => {
+    setIsDraggingPanelControls(false);
+  };
+
+  // Add event listeners for panel controls dragging
+  useEffect(() => {
+    if (isDraggingPanelControls) {
+      window.addEventListener('mousemove', handlePanelControlsMouseMove);
+      window.addEventListener('mouseup', handlePanelControlsMouseUp);
+      return () => {
+        window.removeEventListener('mousemove', handlePanelControlsMouseMove);
+        window.removeEventListener('mouseup', handlePanelControlsMouseUp);
+      };
+    }
+  }, [isDraggingPanelControls, panelControlsDragStart]);
 
   // Minimap navigation handler
   const handleMinimapNavigate = (centerX: number, centerY: number, zoom?: number) => {
@@ -114,18 +262,19 @@ export default function ConstellationPage() {
     }
   }, [state.draggedNode, state.dragMode, state.nodePositions, allItems]);
 
-  // Show welcome notification and auto-dismiss welcome panel
+  // Auto-dismiss welcome panel
   useEffect(() => {
-    setTimeout(() => {
-      showNotification('🌌 Welcome to your Depth-Layered Data Constellation! Click constellation centers to expand into 3D layers.', 'info');
-    }, 1000);
-    setTimeout(() => {
-      showNotification('⇧ Hold Shift and click items to bring them to the foreground!', 'success');
-    }, 3000);
-    setTimeout(() => {
-      showNotification('🗺️ Use the minimap in the bottom-right corner to navigate your constellation!', 'info');
-    }, 5000);
-    
+    // All notifications disabled per user request
+    // setTimeout(() => {
+    //   showNotification('🌌 Welcome to your Depth-Layered Data Constellation! Click constellation centers to expand into 3D layers.', 'info');
+    // }, 1000);
+    // setTimeout(() => {
+    //   showNotification('⇧ Hold Shift and click items to bring them to the foreground!', 'success');
+    // }, 3000);
+    // setTimeout(() => {
+    //   showNotification('🗺️ Use the minimap in the bottom-right corner to navigate your constellation!', 'info');
+    // }, 5000);
+
     // Auto-dismiss welcome panel after 7 seconds
     setTimeout(() => {
       if (state.showWelcomePanel) {
@@ -133,7 +282,7 @@ export default function ConstellationPage() {
         closeWelcomePanel();
       }
     }, 7000);
-  }, [showNotification, closeWelcomePanel, state.showWelcomePanel]);
+  }, [closeWelcomePanel, state.showWelcomePanel]);
 
   const handleConstellationClick = (constellationId: string) => {
     // Toggle constellation highlighting
@@ -157,6 +306,16 @@ export default function ConstellationPage() {
           console.log('🌍 Click coordinates:', e.clientX, e.clientY);
         }}
       >
+      {/* Loading Indicator */}
+      {isLoading && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/95">
+          <div className="text-center">
+            <div className="inline-block animate-spin rounded-full h-16 w-16 border-b-2 border-blue-400 mb-4"></div>
+            <p className="text-blue-400 text-lg">Loading constellation from database...</p>
+          </div>
+        </div>
+      )}
+
       {/* Gravity Core Control */}
       <GravityCore
         position={state.gravityCorePosition}
@@ -192,7 +351,7 @@ export default function ConstellationPage() {
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onWheel={handleWheel}
-          onItemClick={handleItemClickWithDepth}
+          onItemClick={handleItemClickWrapper}
           onItemHover={handleItemHover}
           getItemDepthLayer={getItemDepthLayer}
           getDepthScale={getDepthScale}
@@ -206,24 +365,36 @@ export default function ConstellationPage() {
       </ConstellationErrorBoundary>
       
       {/* Floating panel controls - moved below welcome panel */}
-      <div className="absolute top-32 right-5 bg-slate-800/90 backdrop-blur-sm border border-slate-600/50 rounded-lg p-3 z-40 space-y-2">
-        <div className="text-xs text-slate-400 mb-2">Panel Controls</div>
-        <div className="space-y-1">
+      <div
+        className="absolute bg-slate-800/90 backdrop-blur-sm border border-slate-600/50 rounded-lg p-2 z-40 w-44"
+        style={{
+          left: `${panelControlsPosition.x}px`,
+          top: `${panelControlsPosition.y}px`,
+          cursor: isDraggingPanelControls ? 'grabbing' : 'default'
+        }}
+        onMouseDown={handlePanelControlsMouseDown}
+      >
+        <div
+          className="panel-controls-header text-xs text-slate-400 mb-1 cursor-grab active:cursor-grabbing select-none"
+        >
+          Panel Controls
+        </div>
+        <div className="space-y-0.5">
           <button
             onClick={toggleWelcomePanel}
-            className={`w-full text-left px-2 py-1 rounded text-xs transition-colors ${
-              state.showWelcomePanel 
-                ? 'bg-blue-500/20 text-blue-300' 
+            className={`w-full text-left px-1.5 py-0.5 rounded text-xs transition-colors ${
+              state.showWelcomePanel
+                ? 'bg-blue-500/20 text-blue-300'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            ✨ Welcome Panel
+            ✨ Welcome
           </button>
           <button
             onClick={toggleSidebar}
-            className={`w-full text-left px-2 py-1 rounded text-xs transition-colors ${
-              state.showSidebar 
-                ? 'bg-blue-500/20 text-blue-300' 
+            className={`w-full text-left px-1.5 py-0.5 rounded text-xs transition-colors ${
+              state.showSidebar
+                ? 'bg-blue-500/20 text-blue-300'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
@@ -231,9 +402,9 @@ export default function ConstellationPage() {
           </button>
           <button
             onClick={toggleStatusPanel}
-            className={`w-full text-left px-2 py-1 rounded text-xs transition-colors ${
-              state.showStatusPanel 
-                ? 'bg-blue-500/20 text-blue-300' 
+            className={`w-full text-left px-1.5 py-0.5 rounded text-xs transition-colors ${
+              state.showStatusPanel
+                ? 'bg-blue-500/20 text-blue-300'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
@@ -241,9 +412,9 @@ export default function ConstellationPage() {
           </button>
           <button
             onClick={toggleDebugPanel}
-            className={`w-full text-left px-2 py-1 rounded text-xs transition-colors ${
-              state.showDebugPanel 
-                ? 'bg-blue-500/20 text-blue-300' 
+            className={`w-full text-left px-1.5 py-0.5 rounded text-xs transition-colors ${
+              state.showDebugPanel
+                ? 'bg-blue-500/20 text-blue-300'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
@@ -251,7 +422,7 @@ export default function ConstellationPage() {
           </button>
           <button
             onClick={() => setShowMinimap(!showMinimap)}
-            className={`w-full text-left px-2 py-1 rounded text-xs transition-colors ${
+            className={`w-full text-left px-1.5 py-0.5 rounded text-xs transition-colors ${
               showMinimap
                 ? 'bg-blue-500/20 text-blue-300'
                 : 'text-slate-400 hover:text-slate-200'
@@ -259,16 +430,28 @@ export default function ConstellationPage() {
           >
             🗺️ Minimap
           </button>
+          <button
+            onClick={toggleSearchControls}
+            className={`w-full text-left px-1.5 py-0.5 rounded text-xs transition-colors ${
+              state.showSearchControls
+                ? 'bg-blue-500/20 text-blue-300'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            🔍 Search & Nav
+          </button>
         </div>
       </div>
       
       {/* Search and filter controls */}
-      <SearchControls
-        searchQuery={state.searchQuery}
-        filterType={state.filterType}
-        onSearchChange={handleSearch}
-        onFilterChange={handleTypeFilter}
-      />
+      {state.showSearchControls && (
+        <SearchControls
+          searchQuery={state.searchQuery}
+          filterType={state.filterType}
+          onSearchChange={handleSearch}
+          onFilterChange={handleTypeFilter}
+        />
+      )}
       
       {/* Sidebar with constellation navigation */}
       {state.showSidebar && (
@@ -278,7 +461,7 @@ export default function ConstellationPage() {
           selectedItem={state.selectedItem}
           highlightedConstellation={state.highlightedConstellation}
           onConstellationClick={handleConstellationClick}
-          onItemClick={handleItemClickWithDepth}
+          onItemClick={handleOverflowNodeClick}
           onClose={closeSidebar}
         />
       )}
@@ -300,7 +483,7 @@ export default function ConstellationPage() {
           state={state}
           onNavigate={handleMinimapNavigate}
           onItemSelect={(item) => {
-            handleItemClickWithDepth(item);
+            handleOverflowNodeClick(item);
             const itemPos = state.nodePositions[item.id] || item;
             handleMinimapNavigate(itemPos.x, itemPos.y, 1.5);
           }}
@@ -351,6 +534,15 @@ export default function ConstellationPage() {
 
       {/* Notification container */}
       <NotificationContainer notifications={notifications} onRemove={removeNotification} />
+
+      {/* Folder Contents Modal */}
+      <FolderContentsModal
+        isOpen={showFolderModal}
+        folderName={modalFolderName}
+        items={modalFolderItems}
+        onClose={() => setShowFolderModal(false)}
+        onItemClick={handleItemClickWrapper}
+      />
     </div>
     </ErrorBoundary>
   );

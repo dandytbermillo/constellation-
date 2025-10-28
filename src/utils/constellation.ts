@@ -34,7 +34,8 @@ export function initializeConstellations(constellations: Constellation[]): Const
       icon: constellation.icon,
       isCenter: true,
       content: `${constellation.name} constellation center`,
-      tags: [constellation.name.toLowerCase()]
+      tags: [constellation.name.toLowerCase()],
+      depthLayer: constellation.depthLayer || 0 // Use constellation's depth layer
     };
     allItems.push(centerNode);
 
@@ -59,11 +60,15 @@ export function initializeConstellations(constellations: Constellation[]): Const
       
       // If this is a folder with children, add the children too (but don't show them initially)
       if (item.children && item.children.length > 0) {
-        item.children.forEach(child => {
+        const MAX_VISIBLE_CHILDREN = 10;
+        const childrenToShow = item.children.slice(0, MAX_VISIBLE_CHILDREN);
+        const hasMoreChildren = item.children.length > MAX_VISIBLE_CHILDREN;
+
+        childrenToShow.forEach(child => {
           const childRadian = (child.angle * Math.PI) / 180;
           const childX = x + Math.cos(childRadian) * child.distance;
           const childY = y + Math.sin(childRadian) * child.distance;
-          
+
           const fullChild: ConstellationItem = {
             ...child,
             constellation: constellation.id,
@@ -77,6 +82,39 @@ export function initializeConstellations(constellations: Constellation[]): Const
           };
           allItems.push(fullChild);
         });
+
+        // Add "show more" node if there are more than 10 children
+        if (hasMoreChildren) {
+          const remainingCount = item.children.length - MAX_VISIBLE_CHILDREN;
+          const moreNodeAngle = 360; // Place at bottom
+          const moreNodeRadian = (moreNodeAngle * Math.PI) / 180;
+          const moreNodeX = x + Math.cos(moreNodeRadian) * item.distance;
+          const moreNodeY = y + Math.sin(moreNodeRadian) * item.distance;
+
+          const moreNode: ConstellationItem = {
+            id: `${item.id}_more`,
+            title: `+${remainingCount} more`,
+            type: 'folder',
+            constellation: constellation.id,
+            importance: 3,
+            angle: moreNodeAngle,
+            distance: item.distance,
+            x: moreNodeX,
+            y: moreNodeY,
+            color: constellation.color,
+            parentId: item.id,
+            depthLayer: 3,
+            content: `View all ${item.children.length} items in ${item.title}`,
+            tags: ['overflow', 'more'],
+            icon: '📋',
+            isFolder: false,
+            // Custom property to identify this as an overflow node
+            isOverflowNode: true,
+            overflowParentId: item.id,
+            allChildren: item.children
+          };
+          allItems.push(moreNode);
+        }
       }
     });
   });
@@ -283,11 +321,11 @@ export function getNodePosition(
 // Get depth Z coordinate for depth layers
 export function getDepthZ(depthLayer: number): number {
   const depthMap: Record<number, number> = {
-    0: 0,      // Foreground
-    1: -50,    // Level 1 back
-    2: -100,   // Level 2 back
-    3: -150,   // Level 3 back (hidden children)
-    4: -200    // Level 4 back (deep hidden)
+    0: 0,      // Foreground (Knowledge Base center)
+    1: -150,   // Level 1 back (Subfolder centers)
+    2: -300,   // Level 2 back (Subfolder contents - much further back)
+    3: -450,   // Level 3 back (hidden children)
+    4: -600    // Level 4 back (deep hidden)
   };
   return depthMap[depthLayer] || 0;
 }

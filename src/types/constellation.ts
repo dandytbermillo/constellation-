@@ -29,6 +29,11 @@ export interface ConstellationItem {
   ancestorIds?: string[];         // Array of all ancestor IDs for tracking hierarchy
   isRootFolder?: boolean;         // Flag for root-level folders
   absoluteDepthLayer?: number;    // Calculated absolute depth in the scene
+
+  // Overflow node properties (for "+N more" nodes)
+  isOverflowNode?: boolean;       // Flag indicating this is an overflow/more node
+  overflowParentId?: string;      // ID of the parent folder with overflow
+  allChildren?: ConstellationItem[]; // All children of the parent (including hidden ones)
 }
 
 export interface Constellation {
@@ -72,6 +77,7 @@ export interface AppState {
   showSidebar: boolean;
   showStatusPanel: boolean;
   showDebugPanel: boolean;
+  showSearchControls: boolean;
   
   // Selection and filtering
   selectedItem: ConstellationItem | null;
