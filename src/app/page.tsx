@@ -495,8 +495,8 @@ export default function ConstellationPage() {
         />
       )}
 
-      {/* Connection Tooltip */}
-      <ConnectionTooltip connectionInfo={connectionTooltip} />
+      {/* Connection Tooltip - Disabled */}
+      {/* <ConnectionTooltip connectionInfo={connectionTooltip} /> */}
       
       {/* Welcome message overlay - moved to upper right corner */}
       {state.showWelcomePanel && (

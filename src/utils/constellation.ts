@@ -76,7 +76,7 @@ export function initializeConstellations(constellations: Constellation[]): Const
             y: childY,
             color: constellation.color,
             parentId: item.id,
-            depthLayer: 3, // Start children hidden until parent folder is expanded
+            depthLayer: 1.5, // Children come FORWARD when expanded (closer to user than parent at layer 2)
             content: child.content || `This is a ${child.type} from ${item.title}. ${child.content || 'Part of your organized file structure.'}`,
             tags: child.tags || [item.title.toLowerCase(), child.type]
           };
@@ -320,20 +320,24 @@ export function getNodePosition(
 
 // Get depth Z coordinate for depth layers
 export function getDepthZ(depthLayer: number): number {
+  // Handle fractional layers (MVP: only 1.5, no 0.5)
+  if (depthLayer === 1.5) return -100;  // Constellation center when expanded
+
   const depthMap: Record<number, number> = {
-    0: 0,      // Foreground (Knowledge Base center)
+    0: 0,      // Foreground (children of expanded constellation, Knowledge Base center)
     1: -150,   // Level 1 back (Subfolder centers)
-    2: -300,   // Level 2 back (Subfolder contents - much further back)
+    2: -300,   // Level 2 back (Subfolder contents)
     3: -450,   // Level 3 back (hidden children)
-    4: -600    // Level 4 back (deep hidden)
+    4: -600,   // Level 4 back (deep hidden)
+    999: -2000 // Hidden layer
   };
-  return depthMap[depthLayer] || 0;
+  return depthMap[depthLayer] || (-depthLayer * 150);
 }
 
 // Get item depth layer
 export function getItemDepthLayer(item: ConstellationItem): number {
   if (item.depthLayer !== undefined) return item.depthLayer;
-  if (item.parentId) return 3; // Children start hidden
+  if (item.parentId) return 1.5; // Children come FORWARD when expanded
   return 0; // Default foreground
 }
 

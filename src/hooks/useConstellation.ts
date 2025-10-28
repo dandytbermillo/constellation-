@@ -823,6 +823,48 @@ export function useConstellation() {
     // Get the constellation this item belongs to
     const itemConstellation = item.constellation || (item.isCenter ? item.id.replace('_center', '') : null);
 
+    // === NEW: Expansion-based depth reversal (MVP - Simplified) ===
+
+    // FIRST: Check if this item itself is a folder that's been expanded
+    // When a folder is expanded, it moves forward (Layer 1.5) and its children go even more forward (Layer 0)
+    if ((item.type === 'folder' || item.isFolder) && state.expandedConstellations.has(item.id)) {
+      console.log('📂 FOLDER IS EXPANDED:', item.title, 'Moving to Layer 1.5');
+      logDepthCalculation(item.title, itemConstellation, 'folder-expanded', true, 1.5);
+      return 1.5; // Expanded folder at Layer 1.5 (behind its children but in front of other items)
+    }
+
+    // SECOND: Check if this item is a child of an expanded folder
+    // Children of expanded folders come to the very front (Layer 0)
+    if (item.parentId && state.expandedConstellations.has(item.parentId)) {
+      console.log('👶 CHILD OF EXPANDED FOLDER:', item.title, 'Parent:', item.parentId, 'Moving to Layer 0');
+      logDepthCalculation(item.title, itemConstellation, 'child-of-expanded-folder', true, 0);
+      return 0; // Children at Layer 0 (closest to user)
+    }
+
+    // THIRD: Check if this constellation is expanded
+    if (itemConstellation && state.expandedConstellations.has(itemConstellation)) {
+      // Constellation center steps back when expanded
+      if (item.isCenter) {
+        // Special case: Knowledge Base center stays at Layer 0
+        const isKnowledgeBase = item.title === 'Knowledge Base' || item.depthLayer === 0;
+
+        if (isKnowledgeBase) {
+          logDepthCalculation(item.title, itemConstellation, 'expanded-kb', true, 0);
+          return 0; // KB center stays at front
+        }
+
+        logDepthCalculation(item.title, itemConstellation, 'expanded', true, 1.5);
+        return 1.5; // Other centers step back behind children
+      }
+
+      // ALL children of expanded constellation come forward (simplified - no nested distinction)
+      if (item.constellation === itemConstellation && !item.isCenter) {
+        logDepthCalculation(item.title, itemConstellation, 'expanded', true, 0);
+        return 0; // Children in front
+      }
+    }
+    // === END NEW ===
+
     // If a constellation is focused, adjust depths
     if (state.focusedConstellation && itemConstellation) {
       const isFocusedConstellation = itemConstellation === state.focusedConstellation;
@@ -894,6 +936,12 @@ export function useConstellation() {
       return hierarchyLevel;
     }
 
+    // For constellation items (not centers), check if their constellation is expanded
+    const itemConstellation = item.constellation;
+    if (itemConstellation && !state.expandedConstellations.has(itemConstellation)) {
+      return 999; // Hidden - constellation is collapsed
+    }
+
     // Root folders and regular items stay at layer 1 (fallback)
     if ((item.type === 'folder' || item.isFolder) && hierarchyLevel === 1) {
       return 1;
@@ -906,6 +954,7 @@ export function useConstellation() {
   const getDepthScale = useCallback((depthLayer: number, isCenter: boolean = false): number => {
     if (depthLayer === 0) return 1.0;      // Constellation centers - full size
     if (depthLayer === 1) return 0.95;     // Root items - nearly full size
+    if (depthLayer === 1.5) return 1.0;    // Children FORWARD - full size (prominent)
     if (depthLayer >= 999) return 0.0;     // Hidden items
 
     // Constellation centers should stay larger even when pushed back (for labels)
@@ -923,6 +972,7 @@ export function useConstellation() {
   const getDepthOpacity = useCallback((depthLayer: number, isCenter: boolean = false): number => {
     if (depthLayer === 0) return 1.0;      // Full opacity
     if (depthLayer === 1) return 0.95;     // Root items - nearly full opacity
+    if (depthLayer === 1.5) return 1.0;    // Children FORWARD - full opacity (no dimming of parent)
     if (depthLayer >= 999) return 0.0;     // Hidden
 
     // Constellation centers should stay more visible (for labels)
@@ -939,8 +989,9 @@ export function useConstellation() {
   const getDepthBlur = useCallback((depthLayer: number): string => {
     if (depthLayer === 0) return 'none';    // No blur for centers
     if (depthLayer === 1) return 'none';    // No blur for root items
+    if (depthLayer === 1.5) return 'none';  // Children FORWARD - no blur (crisp and clear)
     if (depthLayer >= 999) return 'blur(20px)'; // Heavy blur for hidden
-    
+
     // Progressive blur starting from layer 2
     const blurAmount = (depthLayer - 1) * 0.5; // 0.5px blur per layer
     return `blur(${Math.min(blurAmount, 6)}px)`; // Max 6px blur
@@ -948,9 +999,10 @@ export function useConstellation() {
 
   const getDepthZ = useCallback((depthLayer: number): number => {
     if (depthLayer >= 999) return -2000;   // Far back for hidden
+    if (depthLayer === 1.5) return -100;   // Children FORWARD - closer than layer 1 (-150)
 
     // Each layer is 150 units back in Z-space (dramatic separation)
-    // Layer 0: 0, Layer 1: -150, Layer 2: -300, etc.
+    // Layer 0: 0, Layer 1: -150, Layer 1.5: -100 (FORWARD!), Layer 2: -300, etc.
     return -depthLayer * 150;
   }, []);
 
@@ -1052,21 +1104,28 @@ export function useConstellation() {
   const toggleConstellationExpansion = useCallback((folderId: string) => {
     console.log('🔄 toggleConstellationExpansion called with ID:', folderId);
 
+    // Normalize ID: strip _center suffix if present (safer than replace)
+    const normalizedId = folderId.endsWith('_center')
+      ? folderId.slice(0, -7)  // Remove last 7 characters ('_center')
+      : folderId;
+
+    console.log('🔄 Normalized ID:', normalizedId, 'from:', folderId);
+
     // Add immediate visual feedback
     const folderItem = allItems.find(item => item.id === folderId);
     if (folderItem) {
-      const isCurrentlyExpanded = state.expandedConstellations.has(folderId);
+      const isCurrentlyExpanded = state.expandedConstellations.has(normalizedId); // Use normalized ID
       showHint(`${folderItem.title}: ${isCurrentlyExpanded ? 'Collapsing...' : 'Expanding...'}`, 1000);
     }
 
     setState((prevState: AppState) => {
       const newExpanded = new Set(prevState.expandedConstellations);
-      const wasExpanded = newExpanded.has(folderId);
+      const wasExpanded = newExpanded.has(normalizedId); // Use normalized ID
 
       if (wasExpanded) {
         // Collapsing: also collapse all descendant folders
-        newExpanded.delete(folderId);
-        console.log('📁 Collapsing folder:', folderId);
+        newExpanded.delete(normalizedId); // Use normalized ID
+        console.log('📁 Collapsing folder:', normalizedId);
 
         // Find and collapse all descendant folders
         const collapseDescendants = (parentId: string) => {
@@ -1082,8 +1141,8 @@ export function useConstellation() {
 
       } else {
         // Expanding: just expand this folder
-        newExpanded.add(folderId);
-        console.log('📂 Expanding folder:', folderId);
+        newExpanded.add(normalizedId); // ✅ Add normalized ID
+        console.log('📂 Expanding folder:', normalizedId);
       }
 
       console.log('📋 Current expanded folders:', Array.from(newExpanded));
@@ -1197,16 +1256,9 @@ export function useConstellation() {
         if ((item.type === 'folder' || item.isFolder || item.isCenter) && !item.isOverflowNode) {
           e.preventDefault();
 
-          // Check if it's the root directory (Knowledge Base center)
-          const isRootDirectory = item.isCenter && item.id.includes('virtual-knowledge-base') || item.title === 'Knowledge Base';
-
-          if (isRootDirectory) {
-            // Root directory: just expand/collapse
-            toggleConstellationExpansion(itemId);
-          } else {
-            // Non-root folder/constellation: bring constellation to front (Focus Mode)
-            bringConstellationToFront(itemId);
-          }
+          // Double-click on folder/constellation: just expand/collapse (no "bring to front")
+          // Children will appear at Layer 1.5 (forward) when expanded
+          toggleConstellationExpansion(itemId);
           return;
         }
       }

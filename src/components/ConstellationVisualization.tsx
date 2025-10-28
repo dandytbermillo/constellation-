@@ -150,9 +150,20 @@ export default function ConstellationVisualization({
 
   const getConnectionColor = useCallback((item1: any, item2: any, connectionType: string): string => {
     const isHighlighted = isConnectionHighlighted([item1.id, item2.id]);
-    
+
     if (isHighlighted) return '#fbbf24'; // Gold for highlighted
-    
+
+    // Check if either endpoint is the Knowledge Base center node
+    const isKnowledgeBaseConnection =
+      (item1.isCenter && (item1.title === 'Knowledge Base' || item1.depthLayer === 0)) ||
+      (item2.isCenter && (item2.title === 'Knowledge Base' || item2.depthLayer === 0)) ||
+      item1.id === 'virtual-knowledge-base-root_center' ||
+      item2.id === 'virtual-knowledge-base-root_center';
+
+    if (isKnowledgeBaseConnection) {
+      return '#718096'; // Soft gray for Knowledge Base connections
+    }
+
     switch (connectionType) {
       case 'parent-child':
         // Use parent's color with lighter shade
@@ -480,15 +491,27 @@ export default function ConstellationVisualization({
         bundleLine.setAttribute('stroke-linecap', 'round');
         bundleLine.classList.add('connection-bundle');
 
+        // Add Knowledge Base connection class if applicable
+        const conn = bundleConnections[0];
+        const isKnowledgeBaseBundleConnection =
+          (conn.item1.isCenter && (conn.item1.title === 'Knowledge Base' || conn.item1.depthLayer === 0)) ||
+          (conn.item2.isCenter && (conn.item2.title === 'Knowledge Base' || conn.item2.depthLayer === 0)) ||
+          conn.item1.id === 'virtual-knowledge-base-root_center' ||
+          conn.item2.id === 'virtual-knowledge-base-root_center';
+
+        if (isKnowledgeBaseBundleConnection) {
+          bundleLine.classList.add('connection-knowledge-base');
+        }
+
         // Disable transitions for bundled connections not in focused constellation
         if (state.focusedConstellation) {
-          const conn = bundleConnections[0];
           const item1Constellation = conn.item1Constellation;
           const item2Constellation = conn.item2Constellation;
           const belongsToFocused = item1Constellation === state.focusedConstellation ||
                                    item2Constellation === state.focusedConstellation;
           if (!belongsToFocused) {
             bundleLine.classList.add('connection-no-transition');
+            bundleLine.style.animation = 'none';
           }
         }
 
@@ -511,8 +534,11 @@ export default function ConstellationVisualization({
       } else {
         // Render individual connection
         const conn = bundleConnections[0];
-        const { item1, item2, pos1, pos2, importance, connectionType } = conn;
+        const { item1, item2, pos1, pos2, importance, connectionType, item1Constellation, item2Constellation } = conn;
         const isHighlighted = isConnectionHighlighted([item1.id, item2.id]);
+        const belongsToFocusedConstellation = !state.focusedConstellation ||
+          item1Constellation === state.focusedConstellation ||
+          item2Constellation === state.focusedConstellation;
 
         // Calculate visual properties
         const depthLayer1 = getItemDepthLayer(item1);
@@ -540,15 +566,20 @@ export default function ConstellationVisualization({
         line.setAttribute('opacity', connectionOpacity.toString());
         line.classList.add('connection-line', `connection-${connectionType}`);
 
-        // Disable transitions for individual connections not in focused constellation
-        if (state.focusedConstellation) {
-          const item1Constellation = conn.item1Constellation;
-          const item2Constellation = conn.item2Constellation;
-          const belongsToFocused = item1Constellation === state.focusedConstellation ||
-                                   item2Constellation === state.focusedConstellation;
-          if (!belongsToFocused) {
-            line.classList.add('connection-no-transition');
-          }
+        // Add Knowledge Base connection class if applicable
+        const isKnowledgeBaseConnection =
+          (item1.isCenter && (item1.title === 'Knowledge Base' || item1.depthLayer === 0)) ||
+          (item2.isCenter && (item2.title === 'Knowledge Base' || item2.depthLayer === 0)) ||
+          item1.id === 'virtual-knowledge-base-root_center' ||
+          item2.id === 'virtual-knowledge-base-root_center';
+
+        if (isKnowledgeBaseConnection) {
+          line.classList.add('connection-knowledge-base');
+        }
+
+        if (!belongsToFocusedConstellation) {
+          line.classList.add('connection-no-transition');
+          line.style.animation = 'none';
         }
 
         // Store connection metadata for hover interactions
@@ -585,8 +616,10 @@ export default function ConstellationVisualization({
         }
         
         // Add animation for high-importance or highlighted connections
-        if (importance >= 4 || isHighlighted) {
+        if ((importance >= 4 || isHighlighted) && belongsToFocusedConstellation) {
           line.style.animation = 'connectionPulse 3s ease-in-out infinite';
+        } else {
+          line.style.animation = 'none';
         }
         
         // Apply depth blur

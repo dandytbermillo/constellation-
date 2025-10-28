@@ -272,6 +272,22 @@
   /* Disable transitions for non-focused constellation connections */
   .connection-no-transition {
     transition: none !important;
+    animation: none !important;
+    animation-play-state: paused !important;
+  }
+
+  /* Knowledge Base connection styling */
+  .connection-knowledge-base {
+    stroke: #718096;
+    opacity: 0.5;
+    transition: all 0.3s ease-in-out;
+  }
+
+  .connection-knowledge-base:hover {
+    stroke: #94a3b8;
+    opacity: 0.8;
+    stroke-width: 2.5 !important;
+    filter: drop-shadow(0 0 4px rgba(113, 128, 150, 0.5));
   }
 
   /* Hidden class for labels */
