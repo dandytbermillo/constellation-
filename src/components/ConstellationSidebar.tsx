@@ -50,65 +50,45 @@ export default function ConstellationSidebar({
         </div>
       </div>
       
-      {/* Constellations */}
+      {/* Constellations - Show only centers (Layer 0/1) */}
       <div className="flex-1 overflow-y-auto">
-        {constellations.map((constellation) => (
-          <div key={constellation.id} className="border-b border-slate-700/50 last:border-b-0">
-            {/* Constellation header */}
-            <button
-              className={`w-full p-4 text-left hover:bg-slate-700/50 transition-all duration-200 ${
-                highlightedConstellation === constellation.id ? 'bg-slate-700/50' : ''
-              }`}
-              onClick={() => onConstellationClick(constellation.id)}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <span className="text-lg">{constellation.icon}</span>
-                  <span className="font-medium text-slate-200">{constellation.name}</span>
-                </div>
-                <span className="text-xs text-slate-400 bg-slate-700/50 px-2 py-1 rounded">
-                  {constellation.items.length}
-                </span>
-              </div>
-            </button>
-            
-            {/* Constellation items */}
-            <div className="pl-4">
-              {constellation.items.map((item) => {
-                const fullItem = allItems.find(i => i.id === item.id);
-                if (!fullItem) return null;
-                
-                const isSelected = selectedItem?.id === item.id;
-                
-                return (
-                  <button
-                    key={item.id}
-                    className={`w-full p-3 text-left hover:bg-slate-700/30 transition-all duration-200 border-l-2 ${
-                      isSelected 
-                        ? 'border-blue-400 bg-slate-700/30' 
-                        : 'border-transparent'
-                    }`}
-                    onClick={() => onItemClick(fullItem)}
-                  >
+        {/* Get center nodes from allItems instead of constellation.items */}
+        {allItems
+          .filter(item => item.isCenter) // Only constellation centers
+          .map((centerItem) => {
+            const isSelected = selectedItem?.id === centerItem.id;
+
+            // Count direct children for this constellation
+            const childCount = allItems.filter(item =>
+              item.constellation === centerItem.constellation &&
+              item.depthLayer === 2
+            ).length;
+
+            return (
+              <div key={centerItem.id} className="border-b border-slate-700/50 last:border-b-0">
+                <button
+                  className={`w-full p-4 text-left hover:bg-slate-700/50 transition-all duration-200 border-l-2 ${
+                    isSelected
+                      ? 'border-blue-400 bg-slate-700/30'
+                      : 'border-transparent'
+                  }`}
+                  onClick={() => onItemClick(centerItem)}
+                >
+                  <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <span className="text-sm">{getItemIcon(fullItem)}</span>
-                      <div className="flex-1 min-w-0">
-                        <div className={`text-sm ${isSelected ? 'text-blue-400' : 'text-slate-300'} truncate`}>
-                          {item.title}
-                        </div>
-                        <div className="text-xs text-slate-500 flex items-center gap-2">
-                          <span>{item.type}</span>
-                          <span>•</span>
-                          <span>Importance: {item.importance}/5</span>
-                        </div>
-                      </div>
+                      <span className="text-lg">{centerItem.icon || '⭐'}</span>
+                      <span className={`font-medium ${isSelected ? 'text-blue-400' : 'text-slate-200'}`}>
+                        {centerItem.title}
+                      </span>
                     </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
+                    <span className="text-xs text-slate-400 bg-slate-700/50 px-2 py-1 rounded">
+                      {childCount}
+                    </span>
+                  </div>
+                </button>
+              </div>
+            );
+          })}
       </div>
     </div>
   );

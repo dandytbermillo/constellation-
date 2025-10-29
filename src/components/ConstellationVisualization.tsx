@@ -51,6 +51,16 @@ export default function ConstellationVisualization({
   const nodeElementsRef = useRef<Map<string, SVGElement>>(new Map());
   const labelElementsRef = useRef<Map<string, SVGElement>>(new Map());
   const connectionElementsRef = useRef<SVGGElement | null>(null);
+  const contentCacheRef = useRef<Map<string, string>>(new Map()); // Cache for fetched file contents
+  const activeTooltipRef = useRef<{ element: SVGElement; itemId: string } | null>(null); // Track active tooltip
+
+  // Helper function to hide the currently active tooltip
+  const hideActiveTooltip = useCallback(() => {
+    if (activeTooltipRef.current) {
+      activeTooltipRef.current.element.style.opacity = '0';
+      activeTooltipRef.current = null;
+    }
+  }, []);
 
   // Enhanced opacity calculation that considers depth layers
   const getItemOpacity = useCallback((item: ConstellationItem): number => {
@@ -930,6 +940,161 @@ export default function ConstellationVisualization({
       text.textContent = item.isCenter ? item.icon || '⭐' : getItemIcon(item);
       
       nodeGroup.appendChild(text);
+
+      // Hover preview toolbar for non-folder nodes
+      const isPreviewable = !(item.type === 'folder' || item.isFolder) && !item.isCenter;
+      if (isPreviewable && isHovered) {
+        const hoverBridge = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        hoverBridge.setAttribute('x', '-18');
+        hoverBridge.setAttribute('y', `${-size - 46}`); // Extended to cover full gap to toolbar
+        hoverBridge.setAttribute('width', '36');
+        hoverBridge.setAttribute('height', '46'); // Increased from 18 to 46 to reach toolbar
+        hoverBridge.setAttribute('fill', 'transparent');
+        hoverBridge.style.pointerEvents = 'all';
+        nodeGroup.appendChild(hoverBridge);
+
+        const toolbarGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        toolbarGroup.setAttribute('class', 'preview-toolbar');
+        toolbarGroup.setAttribute('transform', `translate(0, ${-size - 32})`);
+
+        const previewButton = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        previewButton.style.pointerEvents = 'all';
+        previewButton.style.cursor = 'pointer';
+
+        const buttonBackground = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        buttonBackground.setAttribute('x', '-14');
+        buttonBackground.setAttribute('y', '-14');
+        buttonBackground.setAttribute('width', '28');
+        buttonBackground.setAttribute('height', '28');
+        buttonBackground.setAttribute('rx', '8');
+        buttonBackground.setAttribute('fill', 'rgba(15, 23, 42, 0.9)');
+        buttonBackground.setAttribute('stroke', 'rgba(148, 163, 184, 0.6)');
+        buttonBackground.setAttribute('stroke-width', '1.5');
+        previewButton.appendChild(buttonBackground);
+
+        const buttonIcon = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        buttonIcon.setAttribute('text-anchor', 'middle');
+        buttonIcon.setAttribute('dominant-baseline', 'central');
+        buttonIcon.setAttribute('fill', '#cbd5f5');
+        buttonIcon.setAttribute('font-size', '14');
+        buttonIcon.textContent = '👁';
+        previewButton.appendChild(buttonIcon);
+
+        // Tooltip - positioned relative to node position in world space
+        const tooltipGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        // Initial position - will be updated dynamically
+        tooltipGroup.setAttribute('transform', `translate(${pos.x - 100}, ${pos.y - size - 108})`);
+        tooltipGroup.style.pointerEvents = 'none';
+        tooltipGroup.style.opacity = '0';
+
+        const tooltipBackground = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        tooltipBackground.setAttribute('width', '200');
+        tooltipBackground.setAttribute('height', '120'); // Increased from 80 to 120 (50% more)
+        tooltipBackground.setAttribute('rx', '12');
+        tooltipBackground.setAttribute('fill', 'rgba(15, 23, 42, 0.96)');
+        tooltipBackground.setAttribute('stroke', 'rgba(59, 130, 246, 0.45)');
+        tooltipBackground.setAttribute('stroke-width', '1.2');
+        tooltipBackground.setAttribute('filter', 'url(#blur)');
+        tooltipGroup.appendChild(tooltipBackground);
+
+        const tooltipTitle = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        tooltipTitle.setAttribute('x', '16');
+        tooltipTitle.setAttribute('y', '24');
+        tooltipTitle.setAttribute('fill', '#e2e8f0');
+        tooltipTitle.setAttribute('font-size', '13');
+        tooltipTitle.setAttribute('font-weight', '600');
+        tooltipTitle.textContent = item.title || 'Preview';
+        tooltipGroup.appendChild(tooltipTitle);
+
+        const tooltipMeta = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        tooltipMeta.setAttribute('x', '16');
+        tooltipMeta.setAttribute('y', '42');
+        tooltipMeta.setAttribute('fill', '#94a3b8');
+        tooltipMeta.setAttribute('font-size', '11');
+        const metaPieces: string[] = [];
+        if (item.type) metaPieces.push(item.type);
+        if (item.tags && item.tags.length > 0) metaPieces.push(item.tags.slice(0, 2).join(', '));
+        tooltipMeta.textContent = metaPieces.join(' • ') || 'Quick preview';
+        tooltipGroup.appendChild(tooltipMeta);
+
+        // Use foreignObject for proper text wrapping
+        const foreignObject = document.createElementNS('http://www.w3.org/2000/svg', 'foreignObject');
+        foreignObject.setAttribute('x', '16');
+        foreignObject.setAttribute('y', '56'); // Moved down from 42 to give more space
+        foreignObject.setAttribute('width', '168'); // 200 - 32 (16px padding on each side)
+        foreignObject.setAttribute('height', '52'); // Increased from 35 to 52 to fill the extra space
+
+        const tooltipSnippetDiv = document.createElement('div');
+        tooltipSnippetDiv.style.cssText = `
+          color: #cbd5f5;
+          font-size: 11.5px;
+          line-height: 1.4;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          display: -webkit-box;
+          -webkit-line-clamp: 3;
+          -webkit-box-orient: vertical;
+          word-wrap: break-word;
+          max-height: 52px;
+        `;
+
+        // Initial placeholder text
+        tooltipSnippetDiv.textContent = 'Loading preview...';
+        foreignObject.appendChild(tooltipSnippetDiv);
+        tooltipGroup.appendChild(foreignObject);
+
+        previewButton.addEventListener('mouseenter', async () => {
+          // Hide any previously active tooltip
+          hideActiveTooltip();
+
+          tooltipGroup.style.opacity = '1';
+
+          // Track this as the active tooltip
+          activeTooltipRef.current = { element: tooltipGroup, itemId: item.id };
+
+          // Check if content is already cached
+          if (contentCacheRef.current.has(item.id)) {
+            const cachedContent = contentCacheRef.current.get(item.id)!;
+            const snippet = cachedContent.trim() || 'No preview available.';
+            tooltipSnippetDiv.textContent = snippet;
+          } else {
+            // Fetch actual content from API
+            try {
+              const response = await fetch(`/api/items/${item.id}/content`);
+              const data = await response.json();
+
+              if (data.success && data.content) {
+                // Cache the content
+                contentCacheRef.current.set(item.id, data.content);
+
+                // Update tooltip with real content (let CSS handle truncation)
+                tooltipSnippetDiv.textContent = data.content.trim() || 'No preview available.';
+              } else {
+                tooltipSnippetDiv.textContent = 'No preview available.';
+              }
+            } catch (error) {
+              console.error('Failed to fetch content:', error);
+              tooltipSnippetDiv.textContent = 'Failed to load preview.';
+            }
+          }
+        });
+
+        previewButton.addEventListener('mouseleave', () => {
+          tooltipGroup.style.opacity = '0';
+          // Clear active tooltip reference
+          if (activeTooltipRef.current?.itemId === item.id) {
+            activeTooltipRef.current = null;
+          }
+        });
+
+        toolbarGroup.appendChild(previewButton);
+        nodeGroup.appendChild(toolbarGroup);
+
+        // Append tooltip to SVG root (not nodeGroup) so it's always on top
+        // We'll position it absolutely when shown
+        tooltipGroup.setAttribute('id', `tooltip-${item.id}`);
+        svg.appendChild(tooltipGroup);
+      }
       
       // Add depth indicator rings for nested items
       if (depthLayer > 1 && depthLayer < 999) {
@@ -959,7 +1124,7 @@ export default function ConstellationVisualization({
         nodeGroup.appendChild(depthIndicator);
       }
     });
-  }, [allItems, state, getItemOpacity, getItemDepthLayer, getDepthScale, getDepthBlur]);
+  }, [allItems, state, getItemOpacity, getItemDepthLayer, getDepthScale, getDepthBlur, hideActiveTooltip]);
 
   // CRITICAL: Use event delegation instead of individual handlers
   useEffect(() => {
@@ -969,9 +1134,13 @@ export default function ConstellationVisualization({
     // Single event handler for all clicks using event delegation
     const handleSvgClick = (e: MouseEvent) => {
       console.log('🎯 CLICK EVENT FIRED:', e.shiftKey);
+
+      // Hide any active tooltip when clicking anywhere
+      hideActiveTooltip();
+
       const target = e.target as SVGElement;
       let nodeGroup = target.closest('.node-group') as SVGElement;
-      
+
       if (!nodeGroup) {
         // Clicked on empty background - clear group selection if any
         if (onClearGroupSelection) {
@@ -1129,16 +1298,24 @@ export default function ConstellationVisualization({
     const handleSvgMouseOver = (e: MouseEvent) => {
       const target = e.target as SVGElement;
       const nodeGroup = target.closest('.node-group') as SVGElement;
-      
+
       if (!nodeGroup) {
         onItemHover(null);
+        // Hide tooltip when not hovering over any node
+        hideActiveTooltip();
         return;
       }
-      
+
       const itemId = nodeGroup.getAttribute('data-id');
       if (!itemId) return;
-      
+
       const item = allItems.find(i => i.id === itemId);
+
+      // Hide tooltip when switching to a different node
+      if (item && activeTooltipRef.current && activeTooltipRef.current.itemId !== item.id) {
+        hideActiveTooltip();
+      }
+
       if (item) onItemHover(item);
     };
 
@@ -1158,7 +1335,7 @@ export default function ConstellationVisualization({
       svg.removeEventListener('mousedown', handleSvgMouseDown, true);
       svg.removeEventListener('mouseover', handleSvgMouseOver, true);
     };
-  }, [allItems, onItemClick, onItemHover, onMouseDown]);
+  }, [allItems, onItemClick, onItemHover, onMouseDown, hideActiveTooltip]);
 
   // Enhanced labels rendering with depth awareness
   const renderLabels = useCallback((svg: SVGSVGElement) => {
