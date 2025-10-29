@@ -44,6 +44,9 @@ export default function FolderContentsModal({
   const previewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const previewCloseTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isHoveringPreviewRef = useRef(false);
+  const hoverBridgeRef = useRef<HTMLDivElement | null>(null); // Track hover bridge element
+  const currentEyeButtonRef = useRef<{ rect: DOMRect; itemId: string } | null>(null); // Track current eye button
+  const [visibleEyeItemId, setVisibleEyeItemId] = useState<string | null>(null);
 
   // Effect for drag event listeners - must be before early return
   useEffect(() => {
@@ -85,6 +88,63 @@ export default function FolderContentsModal({
     }
   };
 
+  // Hover bridge helper functions
+  const createHoverBridge = (eyeRect: DOMRect, previewX: number) => {
+    // Remove existing bridge if any
+    removeHoverBridge();
+
+    // Create invisible bridge element
+    const bridge = document.createElement('div');
+    bridge.style.cssText = `
+      position: fixed;
+      left: ${eyeRect.right}px;
+      top: ${eyeRect.top}px;
+      width: ${previewX - eyeRect.right}px;
+      height: ${eyeRect.height}px;
+      pointer-events: all;
+      z-index: 9999;
+      background: transparent;
+    `;
+
+    // Add hover handlers to bridge
+    bridge.addEventListener('mouseenter', () => {
+      // Cancel close timer when entering bridge
+      if (previewCloseTimeoutRef.current) {
+        clearTimeout(previewCloseTimeoutRef.current);
+        previewCloseTimeoutRef.current = null;
+      }
+    });
+
+    bridge.addEventListener('mouseleave', (e: MouseEvent) => {
+      // Check if mouse is moving toward preview or away
+      const movingRight = e.clientX > eyeRect.right;
+
+      if (!movingRight && !isHoveringPreviewRef.current) {
+        const hoveredItemId = currentEyeButtonRef.current?.itemId;
+        // Moving away from preview, start close timer
+        previewCloseTimeoutRef.current = setTimeout(() => {
+          if (!isHoveringPreviewRef.current) {
+            setActivePreview(null);
+            setVisibleEyeItemId((current) =>
+              hoveredItemId && current === hoveredItemId ? null : current
+            );
+          }
+        }, PREVIEW_CLOSE_DELAY_MS);
+      }
+    });
+
+    // Append to body
+    document.body.appendChild(bridge);
+    hoverBridgeRef.current = bridge;
+  };
+
+  const removeHoverBridge = () => {
+    if (hoverBridgeRef.current) {
+      hoverBridgeRef.current.remove();
+      hoverBridgeRef.current = null;
+    }
+  };
+
   // Preview handlers
   const handleEyeMouseEnter = (e: React.MouseEvent, item: ConstellationItem) => {
     // Clear any pending close timeout
@@ -107,6 +167,13 @@ export default function FolderContentsModal({
     const gap = 15;
     const previewX = modalRect.right + gap;
     const previewY = rect.top;
+
+    // Store eye button rect for hover bridge
+    currentEyeButtonRef.current = { rect, itemId: item.id };
+    setVisibleEyeItemId(item.id);
+
+    // Create hover bridge immediately to cover the gap
+    createHoverBridge(rect, previewX);
 
     // Start delay before showing preview
     previewTimeoutRef.current = setTimeout(async () => {
@@ -149,7 +216,7 @@ export default function FolderContentsModal({
     }, PREVIEW_HOVER_DELAY_MS);
   };
 
-  const handleEyeMouseLeave = () => {
+  const handleEyeMouseLeave = (itemId: string) => {
     // Clear pending preview
     if (previewTimeoutRef.current) {
       clearTimeout(previewTimeoutRef.current);
@@ -161,6 +228,9 @@ export default function FolderContentsModal({
       previewCloseTimeoutRef.current = setTimeout(() => {
         if (!isHoveringPreviewRef.current) {
           setActivePreview(null);
+          setVisibleEyeItemId((current) =>
+            current === itemId ? null : current
+          );
         }
       }, PREVIEW_CLOSE_DELAY_MS);
     }
@@ -168,6 +238,9 @@ export default function FolderContentsModal({
 
   const handlePreviewMouseEnter = () => {
     isHoveringPreviewRef.current = true;
+    if (activePreview?.itemId) {
+      setVisibleEyeItemId(activePreview.itemId);
+    }
     if (previewCloseTimeoutRef.current) {
       clearTimeout(previewCloseTimeoutRef.current);
       previewCloseTimeoutRef.current = null;
@@ -176,10 +249,32 @@ export default function FolderContentsModal({
 
   const handlePreviewMouseLeave = () => {
     isHoveringPreviewRef.current = false;
+    const previewItemId = activePreview?.itemId || currentEyeButtonRef.current?.itemId || null;
     previewCloseTimeoutRef.current = setTimeout(() => {
       setActivePreview(null);
+      setVisibleEyeItemId((current) =>
+        previewItemId && current === previewItemId ? null : current
+      );
+      removeHoverBridge(); // Clean up bridge when preview closes
     }, PREVIEW_CLOSE_DELAY_MS);
   };
+
+  // Cleanup hover bridge when preview closes or component unmounts
+  useEffect(() => {
+    if (!activePreview) {
+      removeHoverBridge();
+    }
+  }, [activePreview]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      removeHoverBridge();
+      setVisibleEyeItemId((current) =>
+        currentEyeButtonRef.current && current === currentEyeButtonRef.current.itemId ? null : current
+      );
+    };
+  }, []);
 
   if (!isOpen) return null;
 
@@ -271,18 +366,24 @@ export default function FolderContentsModal({
 
                       {/* Eye icon - only for non-folder items */}
                       {!item.isFolder && (
-                        <button
+                        <span
                           onMouseEnter={(e) => handleEyeMouseEnter(e, item)}
-                          onMouseLeave={handleEyeMouseLeave}
+                          onMouseLeave={() => handleEyeMouseLeave(item.id)}
                           onClick={(e) => {
                             e.stopPropagation();
                             // Eye click could pin the preview or open the item
                           }}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity hover:bg-white/10 rounded p-0.5 cursor-pointer"
+                          className={`transition-opacity hover:bg-white/10 rounded p-0.5 cursor-pointer inline-flex items-center justify-center ${
+                            visibleEyeItemId === item.id || activePreview?.itemId === item.id
+                              ? 'opacity-100'
+                              : 'opacity-0 group-hover:opacity-100'
+                          }`}
                           title="Hover to preview"
+                          role="button"
+                          tabIndex={0}
                         >
                           <Eye className="w-3.5 h-3.5 text-blue-400" />
-                        </button>
+                        </span>
                       )}
                     </button>
                   </div>

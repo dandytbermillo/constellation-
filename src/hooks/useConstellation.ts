@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, useRef, useReducer } from 'react';
 import { AppState, ConstellationItem, ItemType, Position, Constellation } from '@/types/constellation';
 import { initializeConstellations, getNodeAtPosition, getDepthZ, getItemDepthLayer as getItemDepthLayerUtil, calculateHierarchyLevel, areAllAncestorsExpanded, getNodePosition as getNodePositionUtil, inverseTransformPoint } from '@/utils/constellation';
+import { getWheelZoomMultiplier } from '@/utils/zoom-utils';
 import { logConstellationFocus, logDepthCalculation, logDoubleClick } from '@/utils/debugLog';
 
 // State machine types
@@ -703,12 +704,45 @@ export function useConstellation() {
     });
   }, [updateState, state.isDragging, state.isDraggingGravityCore]);
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
+  const handleWheel = useCallback((e: React.WheelEvent<SVGSVGElement>) => {
+    if (!e.shiftKey) {
+      return;
+    }
+
     e.preventDefault();
-    const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-    const newZoom = Math.max(0.3, Math.min(3, state.zoom * zoomFactor));
-    updateState({ zoom: newZoom });
-  }, [state.zoom, updateState]);
+
+    const multiplier = getWheelZoomMultiplier(e.nativeEvent);
+    const currentZoom = state.zoom || 1;
+    const newZoom = Math.max(0.3, Math.min(3, currentZoom * multiplier));
+
+    if (!Number.isFinite(newZoom) || Math.abs(newZoom - currentZoom) < 1e-6) {
+      return;
+    }
+
+    const svgElement = e.currentTarget;
+    const rect = svgElement.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    const worldBefore = inverseTransformPoint(mouseX, mouseY, 0, state);
+    const worldAfter = inverseTransformPoint(mouseX, mouseY, 0, { ...state, zoom: newZoom });
+
+    const currentPan = state.pan || { x: 0, y: 0 };
+    const panAdjustment = {
+      x: currentPan.x + (worldAfter.x - worldBefore.x),
+      y: currentPan.y + (worldAfter.y - worldBefore.y)
+    };
+
+    if (!Number.isFinite(panAdjustment.x) || !Number.isFinite(panAdjustment.y)) {
+      updateState({ zoom: newZoom });
+      return;
+    }
+
+    updateState({
+      zoom: newZoom,
+      pan: panAdjustment
+    });
+  }, [state, updateState]);
 
   // Enhanced Shift+Click handler for progressive constellation focusing
   const handleShiftClick = useCallback((item: ConstellationItem, event: React.MouseEvent) => {
