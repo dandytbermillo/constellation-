@@ -215,34 +215,43 @@ export function useConstellation() {
     console.log('👶 Children found:', items.filter(item => item.parentId));
     setAllItems(items);
 
-    // Create connections - each item connects to its constellation center, plus cross-constellation connections
-    const newConnections: Array<[string, string]> = [];
-    
-    constellations.forEach(constellation => {
-      const centerNodeId = constellation.id + '_center';
-      constellation.items.forEach(item => {
-        newConnections.push([item.id, centerNodeId]);
-        
-        // Add connections between folders and their children
-        if ((item.type === 'folder' || item.isFolder) && item.children) {
-          item.children.forEach(child => {
-            newConnections.push([item.id, child.id]);
-            console.log('🔗 Added folder-child connection:', item.title, '->', child.title);
-          });
-        }
-      });
+    // Create connections from fully populated items
+    const connectionAccumulator: Array<[string, string]> = [];
+    const seenConnections = new Set<string>();
+    const addConnection = (from: string | undefined | null, to: string | undefined | null) => {
+      if (!from || !to) return;
+      const key = `${from}::${to}`;
+      if (!seenConnections.has(key)) {
+        seenConnections.add(key);
+        connectionAccumulator.push([from, to]);
+      }
+    };
+
+    items.forEach(item => {
+      // Link direct constellation children (no parent) to their constellation center
+      if (
+        !item.isCenter &&
+        item.constellation &&
+        (!item.parentId || item.parentId === item.constellation)
+      ) {
+        addConnection(item.id, `${item.constellation}_center`);
+      }
+
+      // Link nested items to their direct parent
+      if (item.parentId) {
+        addConnection(item.parentId, item.id);
+      }
     });
-    
-    newConnections.push(...crossConstellationConnections);
-    
-    // Log connection initialization for debugging
+
+    crossConstellationConnections.forEach(([from, to]) => addConnection(from, to));
+
     console.log('🔗 Connections initialized:', {
-      totalConnections: newConnections.length,
+      totalConnections: connectionAccumulator.length,
       crossConstellationConnections: crossConstellationConnections.length,
       constellationCenters: constellations.map(c => c.name)
     });
 
-    setConnections(newConnections);
+    setConnections(connectionAccumulator);
   }, [constellations, crossConstellationConnections]);
 
   // Update center position on window resize
