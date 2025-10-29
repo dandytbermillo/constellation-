@@ -8,7 +8,9 @@ const CONFIG = {
   MAX_CHILDREN_PER_FOLDER: 50,     // Max children per folder at any level
   MAX_NESTING_DEPTH: 5,            // Maximum folder nesting depth
   ENABLE_NESTED_CHILDREN: true,    // Feature flag to enable/disable
-  MIN_ANGLE_SECTORS: 6             // Minimum sectors for angle calculation (prevents overlap)
+  MIN_ANGLE_SECTORS: 6,            // Minimum sectors for angle calculation (prevents overlap)
+  CHILD_LAYOUT_BASE_RADIUS: 140,   // Base radius used for direct children positioning
+  CHILD_LAYOUT_RADIUS_STEP: 45     // Radius increment applied per nesting depth
 };
 
 // Recursive function to fetch all nested children from database
@@ -53,11 +55,10 @@ async function fetchChildrenRecursive(
   for (let index = 0; index < children.length; index++) {
     const child = children[index];
 
-    // Use Math.max guard to prevent overlapping when < 6 children
     const totalSiblings = children.length;
-    const minSectors = Math.max(totalSiblings, CONFIG.MIN_ANGLE_SECTORS);
-    const angle = (360 / minSectors) * index;
-    const distance = 70 + Math.random() * 30;
+    const angleStep = totalSiblings > 1 ? 360 / totalSiblings : 360;
+    const angle = totalSiblings > 1 ? angleStep * index : 0;
+    const distance = CONFIG.CHILD_LAYOUT_BASE_RADIUS + depth * CONFIG.CHILD_LAYOUT_RADIUS_STEP;
 
     // Recursively fetch this child's children (if it's a folder)
     const childChildren = child.type === 'folder'
