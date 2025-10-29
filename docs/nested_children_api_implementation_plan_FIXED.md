@@ -317,6 +317,21 @@ if (item.children && item.children.length > 0) {
 - Without this fix, grandchildren are never added to `allItems`
 - The spread operator `...child` copies `child.children` but doesn't process them
 - Nested folders would appear but clicking them would show nothing
+- ✅ Updated: Nested items now inherit their server-provided `depthLayer` (fallback to `parent.depthLayer + 1`), so they start at Layer 3+ and **stay out of `allItems` on initial load** unless their ancestors are expanded.
+
+---
+
+### Depth & Expansion Behavior (Updated)
+
+* Initial load still shows only Layers 0–2 (Knowledge Base center, constellation hubs, and level-one items).
+* When a constellation (e.g. “My Documents”) is double-clicked:
+  * The constellation center shifts to Layer 1.5.
+  * Its direct children appear at Layer 0 (foreground).
+  * Nested folders remain hidden until explicitly expanded.
+* When a nested folder (e.g. “draft” inside “My Documents”) is double-clicked:
+  * That folder moves to Layer 1.5.
+  * Only its immediate children advance to Layer 0; deeper descendants remain hidden until their own parent is expanded.
+* This staged reveal avoids overwhelming the user while keeping the hierarchy consistent.
 
 ---
 
@@ -402,10 +417,12 @@ const items: ConstellationItem[] = await fetchChildrenRecursive(folder.id, folde
    - Double-click "My Documents" → see "Drafts" folder
    - Double-click "Drafts" → see draft documents
    - ✅ Children should move to Layer 0
+   - ✅ Nested folders stay hidden until individually expanded
 
 2. **Deep nesting** (3+ levels):
    - Expand folder → expand subfolder → expand sub-subfolder
    - ✅ Each level should work correctly
+   - ✅ Confirm each expansion only surfaces that folder plus its direct children
 
 3. **Large folders**:
    - Folder with 100+ items
@@ -470,7 +487,7 @@ if (item.parentId && state.expandedConstellations.has(item.parentId)) {
 
 ✅ **Functionality**:
 - Double-click folder → children appear (if in database)
-- Nested folders work correctly (3+ levels)
+- Nested folders work correctly (3+ levels) with staged expansion (folder → Layer 1.5, direct children → Layer 0, deeper items hidden)
 - ParentId field is set on all items
 - Overflow nodes appear for large folders
 
