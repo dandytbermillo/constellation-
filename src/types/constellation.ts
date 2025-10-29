@@ -95,6 +95,8 @@ export interface AppState {
   
   // Depth system
   expandedConstellations: Set<string>;
+  knowledgeBaseId: string | null;
+  spotlightStack: string[];
   focusedItems: Set<string>;
   
   // Constellation focus system - enhanced for progressive focusing
