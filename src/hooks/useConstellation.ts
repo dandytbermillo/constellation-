@@ -836,6 +836,18 @@ export function useConstellation() {
     // SECOND: Check if this item is a child of an expanded folder
     // Children of expanded folders come to the very front (Layer 0)
     if (item.parentId && state.expandedConstellations.has(item.parentId)) {
+      const siblings = allItems.filter(sibling => sibling.parentId === item.parentId);
+      const hasExpandedSibling = siblings.some(sibling =>
+        sibling.id !== item.id && state.expandedConstellations.has(sibling.id)
+      );
+
+      if (hasExpandedSibling && !state.expandedConstellations.has(item.id)) {
+        const fallbackDepth = item.depthLayer !== undefined ? Math.max(item.depthLayer, 2) : 2;
+        console.log('↔️ SIBLING EXPANDED - PUSHING BACK:', item.title, 'Parent:', item.parentId, 'Layer:', fallbackDepth);
+        logDepthCalculation(item.title, itemConstellation, 'child-of-expanded-folder-sibling-expanded', true, fallbackDepth);
+        return fallbackDepth;
+      }
+
       console.log('👶 CHILD OF EXPANDED FOLDER:', item.title, 'Parent:', item.parentId, 'Moving to Layer 0');
       logDepthCalculation(item.title, itemConstellation, 'child-of-expanded-folder', true, 0);
       return 0; // Children at Layer 0 (closest to user)
