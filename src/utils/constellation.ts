@@ -52,10 +52,16 @@ function processChildrenRecursively(
     };
     allItems.push(fullChild);
 
-    // ⭐ DO NOT recursively process nested children on page load
-    // Nested children (Layer 3+) stay in the children property but are NOT added to allItems
-    // They will be added later when the user double-clicks the folder
-    // Only the direct children (depth=0, Layer 2) are processed here
+    // Recursively process deeper descendants so they are ready when parent expands.
+    if (fullChild.children && fullChild.children.length > 0) {
+      processChildrenRecursively(
+        fullChild,
+        { x: childX, y: childY },
+        constellation,
+        allItems,
+        depth + 1
+      );
+    }
   });
 
   // Overflow node logic (same as before)
