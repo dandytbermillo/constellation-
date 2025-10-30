@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useMemo } from 'react';
 import { ConstellationItem } from '@/types/constellation';
 import { getItemIcon, getItemColor, getItemSize, transformPoint, getNodePosition } from '@/utils/constellation';
 
@@ -107,12 +107,75 @@ export default function ConstellationVisualization({
     }
   }, []);
 
+  const hoverHighlight = useMemo(() => {
+    const highlightIds = new Set<string>();
+    const hovered = state.hoveredItem as ConstellationItem | null;
+
+    if (!hovered) {
+      return { ids: highlightIds, rootId: null as string | null };
+    }
+
+    const addIfVisible = (candidate: ConstellationItem) => {
+      const depth = getItemDepthLayer(candidate);
+      if (depth >= 999) {
+        return false;
+      }
+      highlightIds.add(candidate.id);
+      return true;
+    };
+
+    addIfVisible(hovered);
+
+    if (hovered.isCenter && hovered.type === 'constellation' && hovered.constellation) {
+      allItems.forEach(item => {
+        if (item.constellation === hovered.constellation && item.id !== hovered.id) {
+          addIfVisible(item);
+        }
+      });
+    } else if (hovered.type === 'folder' || hovered.isFolder) {
+      const childrenByParent = new Map<string, ConstellationItem[]>();
+      allItems.forEach(item => {
+        if (!item.parentId) return;
+        if (!childrenByParent.has(item.parentId)) {
+          childrenByParent.set(item.parentId, []);
+        }
+        childrenByParent.get(item.parentId)!.push(item);
+      });
+
+      const stack: string[] = [hovered.id];
+      const visited = new Set<string>();
+
+      while (stack.length > 0) {
+        const currentId = stack.pop()!;
+        if (visited.has(currentId)) continue;
+        visited.add(currentId);
+
+        const children = childrenByParent.get(currentId);
+        if (!children) continue;
+
+        children.forEach(child => {
+          if (addIfVisible(child) && (child.type === 'folder' || child.isFolder)) {
+            stack.push(child.id);
+          }
+        });
+      }
+    }
+
+    return { ids: highlightIds, rootId: hovered.id };
+  }, [state.hoveredItem, allItems, getItemDepthLayer]);
+
   // Check if connection should be highlighted
   const isConnectionHighlighted = useCallback((connection: [string, string]): boolean => {
+    if (hoverHighlight.ids.size > 0) {
+      if (connection.some(id => hoverHighlight.ids.has(id))) {
+        return true;
+      }
+    }
+
     if (!state.hoveredItem && !state.selectedItem) return false;
     const highlightId = state.hoveredItem?.id || state.selectedItem?.id;
     return connection.includes(highlightId);
-  }, [state.hoveredItem, state.selectedItem]);
+  }, [hoverHighlight, state.hoveredItem, state.selectedItem]);
 
   // Enhanced connection analysis functions
   const getConnectionType = useCallback((item1: any, item2: any): 'intra-constellation' | 'cross-constellation' | 'parent-child' | 'semantic' => {
@@ -270,6 +333,7 @@ export default function ConstellationVisualization({
     return `url(#${gradientId})`;
   }, []);
 
+
   // Smart connection filtering functions
   const shouldShowConnection = useCallback((item1: any, item2: any, pos1: any, pos2: any, importance: number, connectionType: string): boolean => {
     // Distance-based filtering - use world coordinates, not screen coordinates
@@ -375,6 +439,7 @@ export default function ConstellationVisualization({
   const renderConnections = useCallback((svg: SVGSVGElement) => {
     const connectionsGroup = connectionElementsRef.current;
     if (!connectionsGroup) return;
+    const highlightIds = hoverHighlight.ids;
 
     // Clear existing connections
     connectionsGroup.innerHTML = '';
@@ -513,6 +578,15 @@ export default function ConstellationVisualization({
           bundleLine.classList.add('connection-knowledge-base');
         }
 
+        const bundleHighlighted = bundleConnections.some(connItem =>
+          highlightIds.has(connItem.item1.id) || highlightIds.has(connItem.item2.id)
+        );
+
+        if (bundleHighlighted) {
+          bundleLine.setAttribute('opacity', '0.9');
+          bundleLine.style.filter = 'none';
+        }
+
         // Disable transitions for bundled connections not in focused constellation
         if (state.focusedConstellation) {
           const item1Constellation = conn.item1Constellation;
@@ -545,7 +619,8 @@ export default function ConstellationVisualization({
         // Render individual connection
         const conn = bundleConnections[0];
         const { item1, item2, pos1, pos2, importance, connectionType, item1Constellation, item2Constellation } = conn;
-        const isHighlighted = isConnectionHighlighted([item1.id, item2.id]);
+        const isHighlighted = isConnectionHighlighted([item1.id, item2.id]) ||
+          highlightIds.has(item1.id) || highlightIds.has(item2.id);
         const belongsToFocusedConstellation = !state.focusedConstellation ||
           item1Constellation === state.focusedConstellation ||
           item2Constellation === state.focusedConstellation;
@@ -559,6 +634,9 @@ export default function ConstellationVisualization({
         // Enhance opacity based on importance and type
         const importanceMultiplier = 0.3 + (importance * 0.2); // 0.5 to 1.3
         connectionOpacity = Math.min(1, connectionOpacity * importanceMultiplier);
+        if (isHighlighted) {
+          connectionOpacity = Math.max(connectionOpacity, 0.9);
+        }
         
         // Determine stroke width based on importance
         const strokeWidth = isHighlighted ? importance + 1 : Math.max(1, importance * 0.8);
@@ -634,8 +712,10 @@ export default function ConstellationVisualization({
         
         // Apply depth blur
         const avgDepthBlur = getDepthBlur(Math.round(avgDepthLayer));
-        if (avgDepthBlur !== 'none') {
+        if (!isHighlighted && avgDepthBlur !== 'none') {
           line.style.filter = avgDepthBlur;
+        } else {
+          line.style.filter = 'none';
         }
 
         // Add hover event listeners for connection metadata
@@ -672,10 +752,12 @@ export default function ConstellationVisualization({
         connectionsGroup.appendChild(line);
       }
     });
-  }, [connections, allItems, state, shouldShowConnection, bundleConnections, getConnectionType, getConnectionImportance, getConnectionColor, createGradientConnection, isConnectionHighlighted, getConnectionOpacity, getItemDepthLayer, getDepthBlur]);
+  }, [connections, allItems, state, shouldShowConnection, bundleConnections, getConnectionType, getConnectionImportance, getConnectionColor, createGradientConnection, isConnectionHighlighted, getConnectionOpacity, getItemDepthLayer, getDepthBlur, hoverHighlight]);
 
   // Enhanced nodes rendering with proper event handler lifecycle
   const renderNodes = useCallback((svg: SVGSVGElement) => {
+    const highlightIds = hoverHighlight.ids;
+
     // Sort items by depth for proper rendering order
     const sortedItems = allItems.map(item => ({
         item,
@@ -702,6 +784,7 @@ export default function ConstellationVisualization({
       const isFocused = state.focusedItems.has(item.id);
       const isExpanded = state.expandedConstellations.has(item.id) || 
                         (item.isCenter && item.constellation && state.expandedConstellations.has(item.constellation));
+      const isHighlighted = highlightIds.has(item.id);
       
       // Group selection indicators
       const isGroupSelected = state.selectedGroupItems.has(item.id);
@@ -745,7 +828,7 @@ export default function ConstellationVisualization({
       nodeGroup.style.transition = shouldAnimate ? 'all 0.6s cubic-bezier(0.4, 0, 0.2, 1)' : 'none';
       
       // Apply depth blur effect
-      if (depthLayer > 0 && depthBlur !== 'none') {
+      if (!isHighlighted && depthLayer > 0 && depthBlur !== 'none') {
         nodeGroup.style.filter = depthBlur;
       } else {
         nodeGroup.style.filter = 'none';
@@ -850,11 +933,11 @@ export default function ConstellationVisualization({
       }
       
       // Create glow circle (background)
-      if (isHovered || isSelected || isDragged) {
+      if (isHovered || isSelected || isDragged || isHighlighted) {
         const glowCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
         glowCircle.setAttribute('r', (size + 8).toString());
         glowCircle.setAttribute('fill', color);
-        glowCircle.setAttribute('opacity', '0.3');
+        glowCircle.setAttribute('opacity', isHighlighted && !(isHovered || isSelected || isDragged) ? '0.4' : '0.3');
         glowCircle.setAttribute('filter', 'url(#blur)');
         nodeGroup.appendChild(glowCircle);
       }
@@ -877,8 +960,8 @@ export default function ConstellationVisualization({
       circle.setAttribute('r', size.toString());
       circle.setAttribute('fill', 'url(#nodeGradient)');
       circle.setAttribute('stroke', color);
-      circle.setAttribute('stroke-width', isSelected ? '3' : '2');
-      circle.setAttribute('opacity', opacity.toString());
+      circle.setAttribute('stroke-width', isSelected ? '3' : (isHighlighted ? '3' : '2'));
+      circle.setAttribute('opacity', (isHighlighted ? 1 : opacity).toString());
       
       // Keep pointer events on circle so it's clickable
       circle.style.pointerEvents = 'all';
@@ -892,8 +975,8 @@ export default function ConstellationVisualization({
       // Special styling for folders to make them more clickable
       if (item.type === 'folder' || item.isFolder) {
         circle.style.cursor = 'pointer';
-        circle.setAttribute('stroke-width', isExpanded ? '4' : '3');
-        circle.setAttribute('stroke', isExpanded ? '#10b981' : '#fbbf24'); // Green when expanded, gold when collapsed
+        circle.setAttribute('stroke-width', isExpanded ? '4' : (isHighlighted ? '4' : circle.getAttribute('stroke-width') || '3'));
+        circle.setAttribute('stroke', isExpanded ? '#10b981' : (isHighlighted ? '#fef08a' : '#fbbf24')); // Highlighted folders get brighter stroke
         
         // Add subtle animation for expanded folders
         if (isExpanded) {
@@ -936,7 +1019,7 @@ export default function ConstellationVisualization({
       const fontSize = baseFontSize * depthScale;
       text.setAttribute('font-size', `${fontSize}px`);
       text.setAttribute('font-weight', item.isCenter ? '600' : 'normal');
-      text.setAttribute('opacity', Math.max(opacity, 0.7).toString());
+      text.setAttribute('opacity', (isHighlighted ? 1 : Math.max(opacity, 0.7)).toString());
       text.textContent = item.isCenter ? item.icon || '⭐' : getItemIcon(item);
       
       nodeGroup.appendChild(text);
@@ -1124,7 +1207,7 @@ export default function ConstellationVisualization({
         nodeGroup.appendChild(depthIndicator);
       }
     });
-  }, [allItems, state, getItemOpacity, getItemDepthLayer, getDepthScale, getDepthBlur, hideActiveTooltip]);
+  }, [allItems, state, getItemOpacity, getItemDepthLayer, getDepthScale, getDepthBlur, hideActiveTooltip, hoverHighlight]);
 
   // CRITICAL: Use event delegation instead of individual handlers
   useEffect(() => {
@@ -1342,6 +1425,7 @@ export default function ConstellationVisualization({
     const spotlightPath = state.spotlightStack || [];
     const spotlightLeaf = spotlightPath.length > 1 ? spotlightPath[spotlightPath.length - 1] : null;
     const spotlightSet = new Set(spotlightPath);
+    const highlightIds = hoverHighlight.ids;
 
     allItems.forEach(item => {
       const nodePos = getNodePosition(item, state.nodePositions, allItems);
@@ -1357,6 +1441,7 @@ export default function ConstellationVisualization({
       const isDragged = state.draggedNode === item.id;
       const isHovered = state.hoveredItem === item;
       const isFocused = state.focusedItems.has(item.id);
+      const isHighlighted = highlightIds.has(item.id);
       
       // Get or create label
       let label = labelElementsRef.current.get(item.id) as SVGTextElement;
@@ -1377,12 +1462,18 @@ export default function ConstellationVisualization({
       if (spotlightLeaf && (item.parentId === spotlightLeaf || spotlightSet.has(item.id))) {
         labelOpacity = 1.0;
       }
+      if (isHighlighted) {
+        labelOpacity = 1.0;
+      }
       label.setAttribute('opacity', labelOpacity.toString());
       
       // Apply depth blur to labels (but not to constellation centers)
       const depthBlur = getDepthBlur(depthLayer);
       let effectiveBlur = depthBlur;
       if (spotlightLeaf && (item.parentId === spotlightLeaf || spotlightSet.has(item.id))) {
+        effectiveBlur = 'none';
+      }
+      if (isHighlighted) {
         effectiveBlur = 'none';
       }
       if (effectiveBlur !== 'none' && !item.isCenter) {
@@ -1411,12 +1502,13 @@ export default function ConstellationVisualization({
       }
       
       // Show/hide based on state and depth
-      const shouldShowLabel = state.showLabels || isHovered || state.selectedItem === item || isDragged || isFocused;
+      const shouldShowLabel = state.showLabels || isHovered || state.selectedItem === item || isDragged || isFocused || isHighlighted;
       // Always show labels for constellation centers, even when pushed back
       const showForDepth =
         item.isCenter ||
         depthLayer <= 2 ||
-        (spotlightLeaf && (item.parentId === spotlightLeaf || spotlightSet.has(item.id)));
+        (spotlightLeaf && (item.parentId === spotlightLeaf || spotlightSet.has(item.id))) ||
+        isHighlighted;
 
       if (shouldShowLabel && showForDepth) {
         label.classList.remove('hidden');
@@ -1424,7 +1516,7 @@ export default function ConstellationVisualization({
         label.classList.add('hidden');
       }
     });
-  }, [allItems, state, getItemOpacity, getItemDepthLayer, getDepthScale, getDepthBlur, getConstellationDepthZ]);
+  }, [allItems, state, getItemOpacity, getItemDepthLayer, getDepthScale, getDepthBlur, getConstellationDepthZ, hoverHighlight]);
 
   // Main render function
   const render = useCallback(() => {
