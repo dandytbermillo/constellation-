@@ -1339,6 +1339,10 @@ export default function ConstellationVisualization({
 
   // Enhanced labels rendering with depth awareness
   const renderLabels = useCallback((svg: SVGSVGElement) => {
+    const spotlightPath = state.spotlightStack || [];
+    const spotlightLeaf = spotlightPath.length > 1 ? spotlightPath[spotlightPath.length - 1] : null;
+    const spotlightSet = new Set(spotlightPath);
+
     allItems.forEach(item => {
       const nodePos = getNodePosition(item, state.nodePositions, allItems);
       const depthLayer = getItemDepthLayer(item);
@@ -1369,14 +1373,20 @@ export default function ConstellationVisualization({
       label.setAttribute('text-anchor', 'middle');
       label.textContent = item.title;
 
-      // Constellation centers always have full opacity labels for readability
-      const labelOpacity = item.isCenter ? 1.0 : Math.max(opacity * 0.9, 0.4);
+      let labelOpacity = item.isCenter ? 1.0 : Math.max(opacity * 0.9, 0.4);
+      if (spotlightLeaf && (item.parentId === spotlightLeaf || spotlightSet.has(item.id))) {
+        labelOpacity = 1.0;
+      }
       label.setAttribute('opacity', labelOpacity.toString());
       
       // Apply depth blur to labels (but not to constellation centers)
       const depthBlur = getDepthBlur(depthLayer);
-      if (depthBlur !== 'none' && !item.isCenter) {
-        label.style.filter = depthBlur;
+      let effectiveBlur = depthBlur;
+      if (spotlightLeaf && (item.parentId === spotlightLeaf || spotlightSet.has(item.id))) {
+        effectiveBlur = 'none';
+      }
+      if (effectiveBlur !== 'none' && !item.isCenter) {
+        label.style.filter = effectiveBlur;
       } else {
         label.style.filter = 'none';
       }
@@ -1403,7 +1413,10 @@ export default function ConstellationVisualization({
       // Show/hide based on state and depth
       const shouldShowLabel = state.showLabels || isHovered || state.selectedItem === item || isDragged || isFocused;
       // Always show labels for constellation centers, even when pushed back
-      const showForDepth = item.isCenter || depthLayer <= 2;
+      const showForDepth =
+        item.isCenter ||
+        depthLayer <= 2 ||
+        (spotlightLeaf && (item.parentId === spotlightLeaf || spotlightSet.has(item.id)));
 
       if (shouldShowLabel && showForDepth) {
         label.classList.remove('hidden');
