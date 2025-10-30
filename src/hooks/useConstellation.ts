@@ -55,6 +55,8 @@ const selectionReducer = (state: SelectionState, action: SelectionAction): Selec
 const normalizeId = (id: string): string =>
   id.endsWith('_center') ? id.slice(0, -7) : id;
 
+const MAX_PINNED_SPOTLIGHTS = 3;
+
 // Initial state
 const initialState: AppState = {
   // View state
@@ -109,7 +111,8 @@ const initialState: AppState = {
   // Depth system
   expandedConstellations: new Set<string>(),
   knowledgeBaseId: null,
-  spotlightStack: [],
+  activeSpotlight: null,
+  pinnedSpotlights: [],
   focusedItems: new Set<string>(),
   
   // Constellation focus system - enhanced for progressive focusing
@@ -156,6 +159,31 @@ export function useConstellation() {
     return new Set(constellations.map(constellation => constellation.id));
   }, [constellations]);
 
+  const itemsByNormalizedId = useMemo(() => {
+    const map = new Map<string, ConstellationItem>();
+    allItems.forEach(item => {
+      const normalized = normalizeId(item.id);
+      const existing = map.get(normalized);
+      if (!existing || existing.isCenter) {
+        map.set(normalized, item);
+      }
+    });
+    return map;
+  }, [allItems]);
+
+  const childrenByParentId = useMemo(() => {
+    const map = new Map<string, ConstellationItem[]>();
+    allItems.forEach(item => {
+      if (!item.parentId) return;
+      const parentKey = normalizeId(item.parentId);
+      if (!map.has(parentKey)) {
+        map.set(parentKey, []);
+      }
+      map.get(parentKey)!.push(item);
+    });
+    return map;
+  }, [allItems]);
+
   const getParentNormalized = useCallback((id: string): string | null => {
     const knowledgeBaseId = state.knowledgeBaseId;
     if (!knowledgeBaseId) return null;
@@ -173,94 +201,136 @@ export function useConstellation() {
     return null;
   }, [itemsById, constellationIdSet, state.knowledgeBaseId]);
 
-  const buildSpotlightChain = useCallback((targetId: string, expandedSet: Set<string>): string[] | null => {
+  const spotlightBranches = useMemo(() => {
+    const branches: Array<{ branchId: string; offset: number }> = [];
     const knowledgeBaseId = state.knowledgeBaseId;
-    if (!knowledgeBaseId) return null;
 
-    const chain: string[] = [];
-    const visited = new Set<string>();
-    let current: string | null | undefined = targetId;
+    if (!knowledgeBaseId) {
+      return branches;
+    }
 
-    while (current) {
-      if (visited.has(current)) {
-        return null;
+    const seen = new Set<string>();
+    const addBranch = (branchId: string | null | undefined, offset: number) => {
+      if (!branchId) return;
+      const normalized = normalizeId(branchId);
+      if (seen.has(normalized)) return;
+      seen.add(normalized);
+      branches.push({ branchId: normalized, offset });
+    };
+
+    if (state.activeSpotlight) {
+      addBranch(state.activeSpotlight, 0);
+    } else {
+      addBranch(knowledgeBaseId, 0);
+    }
+
+    let offset = 1;
+    for (let i = state.pinnedSpotlights.length - 1; i >= 0; i--) {
+      addBranch(state.pinnedSpotlights[i], offset);
+      offset += 1;
+    }
+
+    if (branches.length === 0) {
+      addBranch(knowledgeBaseId, 0);
+    }
+
+    return branches;
+  }, [state.activeSpotlight, state.pinnedSpotlights, state.knowledgeBaseId]);
+
+  const branchDepthOverrides = useMemo(() => {
+    const overrides = new Map<string, number>();
+    if (!state.knowledgeBaseId || spotlightBranches.length === 0) {
+      return overrides;
+    }
+
+    const assignLayer = (key: string | undefined, layer: number) => {
+      if (!key) return;
+      const current = overrides.get(key);
+      if (current === undefined || layer < current) {
+        overrides.set(key, layer);
       }
-      visited.add(current);
-      chain.unshift(current);
+    };
 
-      if (current === knowledgeBaseId) {
-        break;
-      }
+    const assignItem = (item: ConstellationItem | undefined, layer: number) => {
+      if (!item) return;
+      assignLayer(item.id, layer);
+      assignLayer(normalizeId(item.id), layer);
 
-      if (current !== targetId && !expandedSet.has(current)) {
-        return null;
-      }
-
-      const parent = getParentNormalized(current);
-      if (!parent) {
-        if (knowledgeBaseId !== current) {
-          chain.unshift(knowledgeBaseId);
+      if (!item.isCenter) {
+        const maybeCenterId = `${normalizeId(item.id)}_center`;
+        if (itemsById.has(maybeCenterId)) {
+          assignLayer(maybeCenterId, layer);
         }
-        break;
+      }
+    };
+
+    const visitDescendants = (item: ConstellationItem, layer: number) => {
+      const normalizedKey = normalizeId(item.id);
+      const children = childrenByParentId.get(normalizedKey) || childrenByParentId.get(item.id);
+      if (!children) return;
+
+      children.forEach(child => {
+        const childLayer = Math.max(0, layer - 1);
+        assignItem(child, childLayer);
+        assignLayer(normalizeId(child.id), childLayer);
+
+        const normalizedChild = normalizeId(child.id);
+        const isFolder = child.type === 'folder' || child.isFolder;
+        if (isFolder && state.expandedConstellations.has(normalizedChild)) {
+          visitDescendants(child, childLayer);
+        }
+      });
+    };
+
+    const processedBranches = new Set<string>();
+
+    spotlightBranches.forEach(({ branchId, offset }) => {
+      if (!branchId || processedBranches.has(branchId)) return;
+      processedBranches.add(branchId);
+
+      const branchRootItem = itemsByNormalizedId.get(branchId) || itemsById.get(branchId);
+      if (!branchRootItem) {
+        assignLayer(branchId, offset + 1);
+        return;
       }
 
-      current = parent;
-    }
+      const rootLayer = offset + 1;
+      assignItem(branchRootItem, rootLayer);
+      assignLayer(branchId, rootLayer);
 
-    if (chain[0] !== knowledgeBaseId) {
-      chain.unshift(knowledgeBaseId);
-    }
+      const branchIsFolder = branchRootItem.type === 'folder' || branchRootItem.isFolder;
+      const rootExpanded = !branchIsFolder || state.expandedConstellations.has(branchId);
+      if (rootExpanded) {
+        visitDescendants(branchRootItem, rootLayer);
+      }
 
-    return chain;
-  }, [getParentNormalized, state.knowledgeBaseId]);
+      let parentId = getParentNormalized(branchId);
+      let distanceUp = 1;
 
-  const deriveSpotlightFromExpanded = useCallback((expandedSet: Set<string>, preferredLeaf?: string): string[] => {
-    const knowledgeBaseId = state.knowledgeBaseId;
-    if (!knowledgeBaseId) return [];
+      while (parentId) {
+        const parentItem = itemsByNormalizedId.get(parentId) || itemsById.get(parentId);
+        assignItem(parentItem, rootLayer + distanceUp);
+        assignLayer(parentId, rootLayer + distanceUp);
 
-    if (expandedSet.size === 0) {
-      return [knowledgeBaseId];
-    }
+        if (parentId === state.knowledgeBaseId) {
+          break;
+        }
 
-    const candidateOrder: string[] = [];
-    if (preferredLeaf) {
-      candidateOrder.push(preferredLeaf);
-    }
-    expandedSet.forEach(id => {
-      if (!candidateOrder.includes(id)) {
-        candidateOrder.push(id);
+        parentId = getParentNormalized(parentId);
+        distanceUp += 1;
       }
     });
 
-    let bestChain: string[] = [knowledgeBaseId];
-    let bestScore = 1;
-
-    const evaluated = new Set<string>();
-
-    for (const candidate of candidateOrder) {
-      if (!candidate || evaluated.has(candidate)) continue;
-      evaluated.add(candidate);
-
-      if (candidate !== preferredLeaf && !expandedSet.has(candidate)) continue;
-
-      const chain = buildSpotlightChain(candidate, expandedSet);
-      if (!chain) continue;
-
-      const score = chain.length;
-      const isPreferred = preferredLeaf && chain[chain.length - 1] === preferredLeaf;
-
-      if (isPreferred) {
-        return chain;
-      }
-
-      if (score > bestScore) {
-        bestChain = chain;
-        bestScore = score;
-      }
-    }
-
-    return bestChain;
-  }, [buildSpotlightChain, state.knowledgeBaseId]);
+    return overrides;
+  }, [
+    spotlightBranches,
+    itemsByNormalizedId,
+    itemsById,
+    childrenByParentId,
+    getParentNormalized,
+    state.expandedConstellations,
+    state.knowledgeBaseId
+  ]);
 
   // Synchronous group selection state using refs
   const groupSelectionRef = useRef<{
@@ -318,16 +388,14 @@ export function useConstellation() {
             setState(prev => {
               if (
                 prev.knowledgeBaseId === knowledgeBaseConstellation.id &&
-                prev.spotlightStack.length > 0
+                prev.activeSpotlight
               ) {
                 return prev;
               }
               return {
                 ...prev,
                 knowledgeBaseId: knowledgeBaseConstellation.id,
-                spotlightStack: prev.spotlightStack.length > 0
-                  ? prev.spotlightStack
-                  : [knowledgeBaseConstellation.id]
+                activeSpotlight: prev.activeSpotlight ?? knowledgeBaseConstellation.id
               };
             });
           }
@@ -1038,58 +1106,13 @@ export function useConstellation() {
       return 0;
     }
 
-    const knowledgeBaseId = state.knowledgeBaseId;
-    const spotlightPath = state.spotlightStack;
-    const itemConstellation = item.constellation || (item.isCenter ? normalizeId(item.id) : null);
+    const normalizedId = normalizeId(item.id);
+    const overrideLayer =
+      branchDepthOverrides.get(item.id) ??
+      branchDepthOverrides.get(normalizedId);
 
-    let layer: number | null = null;
-
-    if (!knowledgeBaseId || spotlightPath.length === 0) {
-      layer = getBaseDepthLayer(item);
-    } else {
-      const normalizedId = normalizeId(item.id);
-      const leafId = spotlightPath.length > 1 ? spotlightPath[spotlightPath.length - 1] : null;
-      const globalPush = Math.max(0, spotlightPath.length - 2);
-      const baseLayer = getBaseDepthLayer(item);
-      const isKnowledgeBase = normalizedId === knowledgeBaseId;
-
-      if (!leafId) {
-        if (isKnowledgeBase) {
-          layer = 0;
-        } else if (item.isCenter) {
-          layer = 1;
-        } else {
-          layer = baseLayer;
-        }
-      } else if (item.parentId === leafId) {
-        layer = 0;
-      } else if (normalizedId === leafId) {
-        layer = 1.5;
-      } else {
-        const pathIndex = spotlightPath.indexOf(normalizedId);
-
-        if (pathIndex >= 0 && pathIndex < spotlightPath.length - 1) {
-          if (isKnowledgeBase) {
-            layer = globalPush;
-          } else {
-            const distanceFromLeaf = (spotlightPath.length - 1) - pathIndex;
-            layer = 1.5 + distanceFromLeaf;
-          }
-        } else if (isKnowledgeBase) {
-          layer = globalPush;
-        } else if (item.isCenter) {
-          layer = 1 + globalPush;
-        } else if (baseLayer >= 999) {
-          layer = baseLayer;
-        } else {
-          layer = baseLayer + globalPush;
-        }
-      }
-    }
-
-    if (layer === null) {
-      layer = getBaseDepthLayer(item);
-    }
+    let layer = overrideLayer !== undefined ? overrideLayer : getBaseDepthLayer(item);
+    const itemConstellation = item.constellation || (item.isCenter ? normalizedId : null);
 
     if (state.focusedConstellation && itemConstellation) {
       const isFocusedConstellation = itemConstellation === state.focusedConstellation;
@@ -1122,7 +1145,14 @@ export function useConstellation() {
     }
 
     return layer;
-  }, [allItems, getBaseDepthLayer, state.expandedConstellations, state.focusedConstellation, state.focusedItems, state.knowledgeBaseId, state.spotlightStack]);
+  }, [
+    allItems,
+    branchDepthOverrides,
+    getBaseDepthLayer,
+    state.expandedConstellations,
+    state.focusedConstellation,
+    state.focusedItems
+  ]);
 
   const getDepthScale = useCallback((depthLayer: number, isCenter: boolean = false): number => {
     if (depthLayer === 0) return 1.0;      // Constellation centers - full size
@@ -1293,35 +1323,81 @@ export function useConstellation() {
       updatedExpanded.delete(normalizedId);
       console.log('📁 Collapsing folder:', normalizedId);
 
-      const collapseDescendants = (parentId: string) => {
+      const collapseDescendants = (parentActualId: string) => {
         allItems.forEach(item => {
-          if (item.parentId === parentId && (item.type === 'folder' || item.isFolder)) {
-            updatedExpanded.delete(item.id);
+          if (item.parentId === parentActualId && (item.type === 'folder' || item.isFolder)) {
+            const normalizedChild = normalizeId(item.id);
+            updatedExpanded.delete(normalizedChild);
             console.log('📁 Also collapsing descendant folder:', item.title);
             collapseDescendants(item.id);
           }
         });
       };
-      collapseDescendants(normalizedId);
+      collapseDescendants(folderId);
     } else {
       updatedExpanded.add(normalizedId);
       console.log('📂 Expanding folder:', normalizedId);
     }
 
-    const preferredLeaf = isCurrentlyExpanded ? undefined : normalizedId;
-    const newSpotlight = deriveSpotlightFromExpanded(updatedExpanded, preferredLeaf);
-
     console.log('📋 Current expanded folders:', Array.from(updatedExpanded));
-    console.log('🔆 Spotlight stack:', newSpotlight);
 
-    setState(prevState => ({
-      ...prevState,
-      expandedConstellations: new Set(updatedExpanded),
-      spotlightStack: newSpotlight.length > 0
-        ? newSpotlight
-        : (prevState.knowledgeBaseId ? [prevState.knowledgeBaseId] : prevState.spotlightStack),
-      depthAnimationActive: true
-    }));
+    setState(prevState => {
+      const nextPinned = [...prevState.pinnedSpotlights];
+      let nextActive = prevState.activeSpotlight;
+
+      if (isCurrentlyExpanded) {
+        if (prevState.activeSpotlight === normalizedId) {
+          if (nextPinned.length > 0) {
+            nextActive = nextPinned[nextPinned.length - 1];
+            nextPinned.pop();
+          } else {
+            nextActive = prevState.knowledgeBaseId ?? null;
+          }
+        } else {
+          const pinnedIndex = nextPinned.indexOf(normalizedId);
+          if (pinnedIndex >= 0) {
+            nextPinned.splice(pinnedIndex, 1);
+          }
+        }
+      } else {
+        const pinnedIndex = nextPinned.indexOf(normalizedId);
+
+        if (pinnedIndex >= 0) {
+          nextPinned.splice(pinnedIndex, 1);
+          if (nextActive && nextActive !== normalizedId) {
+            if (!nextPinned.includes(nextActive)) {
+              nextPinned.push(nextActive);
+            }
+          }
+          nextActive = normalizedId;
+        } else {
+          if (nextActive && nextActive !== normalizedId) {
+            if (!nextPinned.includes(nextActive)) {
+              nextPinned.push(nextActive);
+            }
+          }
+          nextActive = normalizedId;
+        }
+      }
+
+      while (nextPinned.length > MAX_PINNED_SPOTLIGHTS) {
+        nextPinned.shift();
+      }
+
+      if (!nextActive && prevState.knowledgeBaseId) {
+        nextActive = prevState.knowledgeBaseId;
+      }
+
+      console.log('🔆 Active spotlight:', nextActive, '| Pinned spotlights:', nextPinned);
+
+      return {
+        ...prevState,
+        expandedConstellations: new Set(updatedExpanded),
+        activeSpotlight: nextActive,
+        pinnedSpotlights: nextPinned,
+        depthAnimationActive: true
+      };
+    });
 
     setTimeout(() => {
       setState(prevState => ({
@@ -1329,7 +1405,7 @@ export function useConstellation() {
         depthAnimationActive: false
       }));
     }, 600);
-  }, [allItems, deriveSpotlightFromExpanded, showHint, state.expandedConstellations]);
+  }, [allItems, showHint, state.expandedConstellations]);
 
   // Enhanced item click handler that supports depth interaction and group selection
   const handleItemClickWithDepth = useCallback((item: ConstellationItem, event?: React.MouseEvent) => {

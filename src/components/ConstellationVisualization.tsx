@@ -4,6 +4,9 @@ import React, { useRef, useEffect, useCallback, useMemo } from 'react';
 import { ConstellationItem } from '@/types/constellation';
 import { getItemIcon, getItemColor, getItemSize, transformPoint, getNodePosition } from '@/utils/constellation';
 
+const normalizeId = (id: string): string =>
+  id.endsWith('_center') ? id.slice(0, -7) : id;
+
 interface ConstellationVisualizationProps {
   allItems: ConstellationItem[];
   connections: Array<[string, string]>;
@@ -53,6 +56,22 @@ export default function ConstellationVisualization({
   const connectionElementsRef = useRef<SVGGElement | null>(null);
   const contentCacheRef = useRef<Map<string, string>>(new Map()); // Cache for fetched file contents
   const activeTooltipRef = useRef<{ element: SVGElement; itemId: string } | null>(null); // Track active tooltip
+
+  const itemsById = useMemo(() => {
+    return new Map(allItems.map(item => [item.id, item]));
+  }, [allItems]);
+
+  const itemsByNormalizedId = useMemo(() => {
+    const map = new Map<string, ConstellationItem>();
+    allItems.forEach(item => {
+      const normalized = normalizeId(item.id);
+      const existing = map.get(normalized);
+      if (!existing || existing.isCenter) {
+        map.set(normalized, item);
+      }
+    });
+    return map;
+  }, [allItems]);
 
   // Helper function to hide the currently active tooltip
   const hideActiveTooltip = useCallback(() => {
@@ -1422,9 +1441,42 @@ export default function ConstellationVisualization({
 
   // Enhanced labels rendering with depth awareness
   const renderLabels = useCallback((svg: SVGSVGElement) => {
-    const spotlightPath = state.spotlightStack || [];
-    const spotlightLeaf = spotlightPath.length > 1 ? spotlightPath[spotlightPath.length - 1] : null;
-    const spotlightSet = new Set(spotlightPath);
+    const spotlightLeaf =
+      state.activeSpotlight && state.activeSpotlight !== state.knowledgeBaseId
+        ? state.activeSpotlight
+        : null;
+    const spotlightSet = new Set<string>();
+
+    if (spotlightLeaf) {
+      let current = spotlightLeaf;
+      const visited = new Set<string>();
+
+      while (current && !visited.has(current)) {
+        visited.add(current);
+        spotlightSet.add(current);
+        spotlightSet.add(`${current}_center`);
+
+        const currentItem = itemsByNormalizedId.get(current) || itemsById.get(current);
+        if (!currentItem) {
+          break;
+        }
+
+        if (!currentItem.parentId) {
+          break;
+        }
+
+        const normalizedParent = normalizeId(currentItem.parentId);
+        if (normalizedParent === current) {
+          break;
+        }
+
+        spotlightSet.add(normalizedParent);
+        spotlightSet.add(`${normalizedParent}_center`);
+
+        current = normalizedParent;
+      }
+    }
+
     const highlightIds = hoverHighlight.ids;
 
     allItems.forEach(item => {
@@ -1442,6 +1494,14 @@ export default function ConstellationVisualization({
       const isHovered = state.hoveredItem === item;
       const isFocused = state.focusedItems.has(item.id);
       const isHighlighted = highlightIds.has(item.id);
+      const normalizedItemId = normalizeId(item.id);
+      const isDirectChildOfLeaf =
+        spotlightLeaf && item.parentId ? normalizeId(item.parentId) === spotlightLeaf : false;
+      const isInSpotlightBranch =
+        spotlightLeaf &&
+        (spotlightSet.has(item.id) ||
+          spotlightSet.has(normalizedItemId) ||
+          isDirectChildOfLeaf);
       
       // Get or create label
       let label = labelElementsRef.current.get(item.id) as SVGTextElement;
@@ -1460,7 +1520,7 @@ export default function ConstellationVisualization({
       label.textContent = item.title;
 
       let labelOpacity = item.isCenter ? 1.0 : Math.max(opacity * 0.9, 0.4);
-      if (spotlightLeaf && (item.parentId === spotlightLeaf || spotlightSet.has(item.id))) {
+      if (isInSpotlightBranch) {
         labelOpacity = 1.0;
       }
       if (isHighlighted) {
@@ -1471,7 +1531,7 @@ export default function ConstellationVisualization({
       // Apply depth blur to labels (but not to constellation centers)
       const depthBlur = getDepthBlur(depthLayer);
       let effectiveBlur = depthBlur;
-      if (spotlightLeaf && (item.parentId === spotlightLeaf || spotlightSet.has(item.id))) {
+      if (isInSpotlightBranch) {
         effectiveBlur = 'none';
       }
       if (isHighlighted) {
@@ -1515,7 +1575,7 @@ export default function ConstellationVisualization({
       const showForDepth =
         item.isCenter ||
         depthLayer <= 2 ||
-        (spotlightLeaf && (item.parentId === spotlightLeaf || spotlightSet.has(item.id))) ||
+        isInSpotlightBranch ||
         isHighlighted;
 
       if (shouldShowLabel && showForDepth) {
@@ -1524,7 +1584,7 @@ export default function ConstellationVisualization({
         label.classList.add('hidden');
       }
     });
-  }, [allItems, state, getItemOpacity, getItemDepthLayer, getDepthScale, getDepthBlur, getConstellationDepthZ, hoverHighlight]);
+  }, [allItems, state, getItemOpacity, getItemDepthLayer, getDepthScale, getDepthBlur, getConstellationDepthZ, hoverHighlight, itemsById, itemsByNormalizedId]);
 
   // Main render function
   const render = useCallback(() => {
