@@ -123,7 +123,7 @@ const initialState: AppState = {
   globalDepthOffset: 0,
   gravityCorePosition: { x: 0, y: 0 }, // Will be set to center
   isDraggingGravityCore: false,
-  gravityCoreVisible: true,
+  gravityCoreVisible: false,
   gravityCoreLocked: false,
   
   // Smart Connection Controls

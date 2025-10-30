@@ -1453,8 +1453,9 @@ export default function ConstellationVisualization({
       }
       
       // Update label position
+      const labelOffset = isHighlighted ? Math.max(size, baseSize) + 5 : size + 5;
       label.setAttribute('x', pos.x.toString());
-      label.setAttribute('y', (pos.y - size - 5).toString());
+      label.setAttribute('y', (pos.y - labelOffset).toString());
       label.setAttribute('text-anchor', 'middle');
       label.textContent = item.title;
 
@@ -1483,17 +1484,24 @@ export default function ConstellationVisualization({
       }
       
       // Special styling for different states
+      const baseLabelSize = item.isCenter ? 14 : 12;
+
       if (isDragged) {
         label.setAttribute('fill', '#ff6b35');
         label.style.fontSize = `${13 * depthScale}px`;
         label.style.fontWeight = '600';
       } else if (isHovered) {
         label.setAttribute('fill', '#fbbf24');
-        label.style.fontSize = `${12 * depthScale}px`;
+        const hoveredFont = 12 * depthScale;
+        label.style.fontSize = `${hoveredFont < baseLabelSize ? baseLabelSize : hoveredFont}px`;
         label.style.fontWeight = '500';
       } else if (isFocused) {
         label.setAttribute('fill', '#fbbf24');
         label.style.fontSize = `${(item.isCenter ? 14 : 12) * depthScale}px`;
+        label.style.fontWeight = '600';
+      } else if (isHighlighted) {
+        label.setAttribute('fill', '#fbbf24');
+        label.style.fontSize = `${Math.max(baseLabelSize, baseLabelSize * depthScale)}px`;
         label.style.fontWeight = '600';
       } else {
         label.setAttribute('fill', '#e2e8f0');
