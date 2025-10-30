@@ -237,17 +237,19 @@ export function useConstellation() {
       branches.push({ branchId: normalized, offset });
     };
 
+    let offset = 0;
+
     if (state.activeSpotlight) {
-      addBranch(state.activeSpotlight, 0);
-    } else {
-      addBranch(knowledgeBaseId, 0);
+      addBranch(state.activeSpotlight, offset);
+      offset += 1;
     }
 
-    let offset = 1;
     for (let i = state.pinnedSpotlights.length - 1; i >= 0; i--) {
       addBranch(state.pinnedSpotlights[i], offset);
       offset += 1;
     }
+
+    addBranch(knowledgeBaseId, offset);
 
     if (branches.length === 0) {
       addBranch(knowledgeBaseId, 0);
@@ -1410,16 +1412,23 @@ export function useConstellation() {
     console.log('📋 Current expanded folders:', Array.from(updatedExpanded));
 
     setState(prevState => {
-      const nextPinned = [...prevState.pinnedSpotlights];
-      let nextActive = prevState.activeSpotlight;
+      const knowledgeBaseNormalized = prevState.knowledgeBaseId
+        ? normalizeId(prevState.knowledgeBaseId)
+        : null;
+      const nextPinned = prevState.pinnedSpotlights
+        .map(id => normalizeId(id))
+        .filter(id => !knowledgeBaseNormalized || id !== knowledgeBaseNormalized);
+      let nextActive = prevState.activeSpotlight
+        ? normalizeId(prevState.activeSpotlight)
+        : null;
 
       if (isCurrentlyExpanded) {
-        if (prevState.activeSpotlight === normalizedId) {
+        if (nextActive === normalizedId) {
           if (nextPinned.length > 0) {
             nextActive = nextPinned[nextPinned.length - 1];
             nextPinned.pop();
           } else {
-            nextActive = prevState.knowledgeBaseId ?? null;
+            nextActive = knowledgeBaseNormalized ?? null;
           }
         } else {
           const pinnedIndex = nextPinned.indexOf(normalizedId);
@@ -1433,15 +1442,19 @@ export function useConstellation() {
         if (pinnedIndex >= 0) {
           nextPinned.splice(pinnedIndex, 1);
           if (nextActive && nextActive !== normalizedId) {
-            if (!nextPinned.includes(nextActive)) {
-              nextPinned.push(nextActive);
+            if (!knowledgeBaseNormalized || nextActive !== knowledgeBaseNormalized) {
+              if (!nextPinned.includes(nextActive)) {
+                nextPinned.push(nextActive);
+              }
             }
           }
           nextActive = normalizedId;
         } else {
           if (nextActive && nextActive !== normalizedId) {
-            if (!nextPinned.includes(nextActive)) {
-              nextPinned.push(nextActive);
+            if (!knowledgeBaseNormalized || nextActive !== knowledgeBaseNormalized) {
+              if (!nextPinned.includes(nextActive)) {
+                nextPinned.push(nextActive);
+              }
             }
           }
           nextActive = normalizedId;
@@ -1452,8 +1465,8 @@ export function useConstellation() {
         nextPinned.shift();
       }
 
-      if (!nextActive && prevState.knowledgeBaseId) {
-        nextActive = prevState.knowledgeBaseId;
+      if (!nextActive && knowledgeBaseNormalized) {
+        nextActive = knowledgeBaseNormalized;
       }
 
       console.log('🔆 Active spotlight:', nextActive, '| Pinned spotlights:', nextPinned);
@@ -1473,6 +1486,7 @@ export function useConstellation() {
         depthAnimationActive: false
       }));
     }, 600);
+
   }, [allItems, showHint, state.expandedConstellations]);
 
   // Enhanced item click handler that supports depth interaction and group selection
