@@ -184,6 +184,25 @@ export function useConstellation() {
     return map;
   }, [allItems]);
 
+  const topLevelConstellationIds = useMemo(() => {
+    const knowledgeBaseId = state.knowledgeBaseId;
+    return constellations
+      .map(constellation => constellation.id)
+      .filter(id => !knowledgeBaseId || id !== knowledgeBaseId);
+  }, [constellations, state.knowledgeBaseId]);
+
+  const itemsByConstellation = useMemo(() => {
+    const map = new Map<string, ConstellationItem[]>();
+    allItems.forEach(item => {
+      if (!item.constellation) return;
+      if (!map.has(item.constellation)) {
+        map.set(item.constellation, []);
+      }
+      map.get(item.constellation)!.push(item);
+    });
+    return map;
+  }, [allItems]);
+
   const getParentNormalized = useCallback((id: string): string | null => {
     const knowledgeBaseId = state.knowledgeBaseId;
     if (!knowledgeBaseId) return null;
@@ -283,6 +302,9 @@ export function useConstellation() {
     };
 
     const processedBranches = new Set<string>();
+    const activeSpotlightId = state.activeSpotlight ? normalizeId(state.activeSpotlight) : null;
+    const pinnedNormalizedIds = new Set(state.pinnedSpotlights.map(id => normalizeId(id)));
+    let knowledgeBaseRootLayer: number | null = null;
 
     spotlightBranches.forEach(({ branchId, offset }) => {
       if (!branchId || processedBranches.has(branchId)) return;
@@ -294,7 +316,10 @@ export function useConstellation() {
         return;
       }
 
-      const rootLayer = offset + 1;
+      const isKnowledgeBaseBranch = branchId === state.knowledgeBaseId;
+      const rootLayer = isKnowledgeBaseBranch
+        ? (offset === 0 ? 0 : offset)
+        : offset + 1;
       assignItem(branchRootItem, rootLayer);
       assignLayer(branchId, rootLayer);
 
@@ -302,6 +327,10 @@ export function useConstellation() {
       const rootExpanded = !branchIsFolder || state.expandedConstellations.has(branchId);
       if (rootExpanded) {
         visitDescendants(branchRootItem, rootLayer);
+      }
+
+      if (isKnowledgeBaseBranch) {
+        knowledgeBaseRootLayer = rootLayer;
       }
 
       let parentId = getParentNormalized(branchId);
@@ -321,6 +350,41 @@ export function useConstellation() {
       }
     });
 
+    if (knowledgeBaseRootLayer !== null) {
+      const centerLayer = knowledgeBaseRootLayer + 1;
+      const directChildLayer = centerLayer + 1;
+
+      topLevelConstellationIds.forEach(constellationId => {
+        const normalizedId = normalizeId(constellationId);
+        if (normalizedId === activeSpotlightId) return;
+        if (pinnedNormalizedIds.has(normalizedId)) return;
+
+        const centerId = `${constellationId}_center`;
+        assignLayer(centerId, centerLayer);
+        assignLayer(normalizedId, centerLayer);
+
+        const constellationItems = itemsByConstellation.get(constellationId);
+        if (!constellationItems) return;
+
+        constellationItems.forEach(item => {
+          const itemNormalized = normalizeId(item.id);
+          if (itemNormalized === activeSpotlightId) return;
+          if (pinnedNormalizedIds.has(itemNormalized)) return;
+
+          const isDirectChild =
+            normalizeId(item.parentId || '') === normalizedId ||
+            item.parentId === constellationId;
+
+          if (!isDirectChild) {
+            return;
+          }
+
+          assignLayer(item.id, directChildLayer);
+          assignLayer(itemNormalized, directChildLayer);
+        });
+      });
+    }
+
     return overrides;
   }, [
     spotlightBranches,
@@ -329,7 +393,11 @@ export function useConstellation() {
     childrenByParentId,
     getParentNormalized,
     state.expandedConstellations,
-    state.knowledgeBaseId
+    state.knowledgeBaseId,
+    state.activeSpotlight,
+    state.pinnedSpotlights,
+    topLevelConstellationIds,
+    itemsByConstellation
   ]);
 
   // Synchronous group selection state using refs
