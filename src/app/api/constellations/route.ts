@@ -201,6 +201,7 @@ export async function GET() {
           isFolder: false,
           isOverflowNode: true,
           overflowParentId: folder.id,
+          parentId: folder.id,
           allChildren: allChildren,
           depthLayer: 2,
           constellation: folder.id // Add constellation ID
