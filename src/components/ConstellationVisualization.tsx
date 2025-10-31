@@ -467,6 +467,55 @@ export default function ConstellationVisualization({
     const connectionsGroup = connectionElementsRef.current;
     if (!connectionsGroup) return;
     const highlightIds = hoverHighlight.ids;
+    const spotlightRootIds = new Set<string>();
+    if (state.activeSpotlight) {
+      spotlightRootIds.add(normalizeId(state.activeSpotlight));
+    }
+    (state.pinnedSpotlights || []).forEach((id: string) => {
+      spotlightRootIds.add(normalizeId(id));
+    });
+
+    const isItemInSpotlightBranch = (item: ConstellationItem | null | undefined): boolean => {
+      if (!item || spotlightRootIds.size === 0) {
+        return false;
+      }
+
+      let currentId: string | null = normalizeId(item.id);
+      const visited = new Set<string>();
+
+      while (currentId) {
+        if (spotlightRootIds.has(currentId)) {
+          return true;
+        }
+
+        if (visited.has(currentId)) {
+          break;
+        }
+        visited.add(currentId);
+
+        const currentItem =
+          itemsByNormalizedId.get(currentId) ||
+          itemsById.get(currentId) ||
+          itemsById.get(`${currentId}_center`);
+
+        if (!currentItem || !currentItem.parentId) {
+          break;
+        }
+
+        const parentNormalized = normalizeId(currentItem.parentId);
+        if (spotlightRootIds.has(parentNormalized)) {
+          return true;
+        }
+
+        if (parentNormalized === currentId) {
+          break;
+        }
+
+        currentId = parentNormalized;
+      }
+
+      return false;
+    };
 
     // Clear existing connections
     connectionsGroup.innerHTML = '';
@@ -608,22 +657,33 @@ export default function ConstellationVisualization({
         const bundleHighlighted = bundleConnections.some(connItem =>
           highlightIds.has(connItem.item1.id) || highlightIds.has(connItem.item2.id)
         );
+        const bundleBelongsToSpotlight = bundleConnections.some(connItem =>
+          isItemInSpotlightBranch(connItem.item1) || isItemInSpotlightBranch(connItem.item2)
+        );
 
         if (bundleHighlighted) {
           bundleLine.setAttribute('opacity', '0.9');
           bundleLine.style.filter = 'none';
         }
 
-        // Disable transitions for bundled connections not in focused constellation
+        let bundleShouldAnimate = bundleBelongsToSpotlight;
+
         if (state.focusedConstellation) {
           const item1Constellation = conn.item1Constellation;
           const item2Constellation = conn.item2Constellation;
           const belongsToFocused = item1Constellation === state.focusedConstellation ||
                                    item2Constellation === state.focusedConstellation;
           if (!belongsToFocused) {
-            bundleLine.classList.add('connection-no-transition');
-            bundleLine.style.animation = 'none';
+            bundleShouldAnimate = false;
           }
+        }
+
+        if (!bundleShouldAnimate) {
+          bundleLine.classList.add('connection-no-transition');
+          bundleLine.style.animation = 'none';
+        } else {
+          bundleLine.classList.remove('connection-no-transition');
+          bundleLine.style.animation = '';
         }
 
         // Add bundle indicator
@@ -651,6 +711,9 @@ export default function ConstellationVisualization({
         const belongsToFocusedConstellation = !state.focusedConstellation ||
           item1Constellation === state.focusedConstellation ||
           item2Constellation === state.focusedConstellation;
+        const belongsToSpotlightBranch =
+          isItemInSpotlightBranch(item1) || isItemInSpotlightBranch(item2);
+        const shouldAnimateConnection = belongsToSpotlightBranch && belongsToFocusedConstellation;
 
         // Calculate visual properties
         const depthLayer1 = getItemDepthLayer(item1);
@@ -692,9 +755,11 @@ export default function ConstellationVisualization({
           line.classList.add('connection-knowledge-base');
         }
 
-        if (!belongsToFocusedConstellation) {
+        if (!shouldAnimateConnection) {
           line.classList.add('connection-no-transition');
           line.style.animation = 'none';
+        } else {
+          line.classList.remove('connection-no-transition');
         }
 
         // Store connection metadata for hover interactions
@@ -731,7 +796,7 @@ export default function ConstellationVisualization({
         }
         
         // Add animation for high-importance or highlighted connections
-        if ((importance >= 4 || isHighlighted) && belongsToFocusedConstellation) {
+        if ((importance >= 4 || isHighlighted) && shouldAnimateConnection) {
           line.style.animation = 'connectionPulse 3s ease-in-out infinite';
         } else {
           line.style.animation = 'none';
@@ -779,7 +844,7 @@ export default function ConstellationVisualization({
         connectionsGroup.appendChild(line);
       }
     });
-  }, [connections, allItems, state, shouldShowConnection, bundleConnections, getConnectionType, getConnectionImportance, getConnectionColor, createGradientConnection, isConnectionHighlighted, getConnectionOpacity, getItemDepthLayer, getDepthBlur, hoverHighlight]);
+  }, [connections, allItems, state, shouldShowConnection, bundleConnections, getConnectionType, getConnectionImportance, getConnectionColor, createGradientConnection, isConnectionHighlighted, getConnectionOpacity, getItemDepthLayer, getDepthBlur, hoverHighlight, itemsById, itemsByNormalizedId]);
 
   // Enhanced nodes rendering with proper event handler lifecycle
   const renderNodes = useCallback((svg: SVGSVGElement) => {
@@ -1033,7 +1098,7 @@ export default function ConstellationVisualization({
         indicator.style.pointerEvents = 'none'; // Text shouldn't block clicks
         nodeGroup.appendChild(indicator);
       }
-      
+
       // Add Shift indicator for constellation centers
       if (item.isCenter && state.isShiftPressed) {
         circle.style.cursor = 'pointer';
