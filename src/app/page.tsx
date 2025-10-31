@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useConstellation } from '@/hooks/useConstellation';
 import { useNotifications } from '@/hooks/useNotifications';
 import ConstellationVisualization from '@/components/ConstellationVisualization';
@@ -39,6 +39,7 @@ export default function ConstellationPage() {
     getDepthOpacity,
     getDepthBlur,
     handleItemClickWithDepth,
+    toggleFolderVisibilityInline,
     getDepthZ,
     getConstellationDepthZ,
     // Panel visibility functions
@@ -89,6 +90,50 @@ export default function ConstellationPage() {
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [modalFolderName, setModalFolderName] = useState('');
   const [modalFolderItems, setModalFolderItems] = useState<ConstellationItem[]>([]);
+
+  type FolderToolbarState = {
+    item: ConstellationItem;
+    screenX: number;
+    screenY: number;
+    radius: number;
+    isExpanded: boolean;
+  };
+
+  const [folderToolbarState, setFolderToolbarState] = useState<FolderToolbarState | null>(null);
+  const folderToolbarHideTimerRef = useRef<number | null>(null);
+
+  const clearFolderToolbarHide = useCallback(() => {
+    if (folderToolbarHideTimerRef.current !== null) {
+      window.clearTimeout(folderToolbarHideTimerRef.current);
+      folderToolbarHideTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleFolderToolbarHide = useCallback(() => {
+    if (folderToolbarHideTimerRef.current !== null) return;
+    folderToolbarHideTimerRef.current = window.setTimeout(() => {
+      setFolderToolbarState(null);
+      folderToolbarHideTimerRef.current = null;
+    }, 500);
+  }, []);
+
+  const handleFolderHoverToolbar = useCallback((payload: FolderToolbarState | null) => {
+    if (payload) {
+      clearFolderToolbarHide();
+      setFolderToolbarState(payload);
+    } else if (folderToolbarState) {
+      clearFolderToolbarHide();
+      scheduleFolderToolbarHide();
+    }
+  }, [clearFolderToolbarHide, scheduleFolderToolbarHide, folderToolbarState]);
+
+  const handleFolderToolbarMouseEnter = useCallback(() => {
+    clearFolderToolbarHide();
+  }, [clearFolderToolbarHide]);
+
+  const handleFolderToolbarMouseLeave = useCallback(() => {
+    scheduleFolderToolbarHide();
+  }, [scheduleFolderToolbarHide]);
 
   // Handler for overflow node clicks
   const handleOverflowNodeClick = async (item: ConstellationItem) => {
@@ -359,10 +404,39 @@ export default function ConstellationPage() {
           getDepthBlur={getDepthBlur}
           getDepthZ={getDepthZ}
           getConstellationDepthZ={getConstellationDepthZ}
+          onFolderHoverToolbar={handleFolderHoverToolbar}
           onClearGroupSelection={clearGroupSelection}
           onCloseDebugPanel={closeDebugPanel}
         />
       </ConstellationErrorBoundary>
+
+      {folderToolbarState && (
+        <div
+          className="constellation-folder-toolbar fixed z-50 flex items-center gap-2 bg-slate-800/95 border border-slate-600/60 rounded-lg px-2 py-1 shadow-lg"
+          style={{
+            left: folderToolbarState.screenX - 40,
+            top: folderToolbarState.screenY - folderToolbarState.radius - 56
+          }}
+          onMouseEnter={handleFolderToolbarMouseEnter}
+          onMouseLeave={() => {
+            handleFolderToolbarMouseLeave();
+            handleItemHover(null);
+          }}
+        >
+          <button
+            className="w-8 h-8 flex items-center justify-center bg-slate-700/80 hover:bg-slate-600/90 rounded-md border border-slate-500/70 text-slate-200 text-lg"
+            onClick={() => {
+              toggleFolderVisibilityInline(folderToolbarState.item.id);
+              setFolderToolbarState(prev => prev ? { ...prev, isExpanded: !prev.isExpanded } : prev);
+            }}
+          >
+            {folderToolbarState.isExpanded ? '📂' : '📁'}
+          </button>
+          <span className="text-xs text-slate-300 whitespace-nowrap">
+            {folderToolbarState.isExpanded ? 'Hide contents' : 'Show contents'}
+          </span>
+        </div>
+      )}
       
       {/* Floating panel controls - moved below welcome panel */}
       <div

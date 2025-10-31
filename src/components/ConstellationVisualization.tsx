@@ -29,6 +29,13 @@ interface ConstellationVisualizationProps {
   onClearGroupSelection?: () => void;
   // Panel close functions
   onCloseDebugPanel?: () => void;
+  onFolderHoverToolbar?: (payload: {
+    item: ConstellationItem;
+    screenX: number;
+    screenY: number;
+    radius: number;
+    isExpanded: boolean;
+  } | null) => void;
 }
 
 export default function ConstellationVisualization({
@@ -49,6 +56,7 @@ export default function ConstellationVisualization({
   getConstellationDepthZ,
   onClearGroupSelection,
   onCloseDebugPanel,
+  onFolderHoverToolbar,
 }: ConstellationVisualizationProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const nodeElementsRef = useRef<Map<string, SVGElement>>(new Map());
@@ -789,6 +797,16 @@ export default function ConstellationVisualization({
       depthLayer: getItemDepthLayer(item)
     })).sort((a, b) => b.pos.depth - a.pos.depth);
 
+    let pendingFolderToolbar: {
+      item: ConstellationItem;
+      screenX: number;
+      screenY: number;
+      radius: number;
+      isExpanded: boolean;
+    } | null = null;
+
+    const svgRect = svgRef.current?.getBoundingClientRect();
+
     sortedItems.forEach(({ item, pos, depthLayer }) => {
       const depthScale = getDepthScale(depthLayer, item.isCenter);
       const baseSize = getItemSize(item);
@@ -1043,21 +1061,70 @@ export default function ConstellationVisualization({
       
       nodeGroup.appendChild(text);
 
-      // Hover preview toolbar for non-folder nodes
-      const isPreviewable = !(item.type === 'folder' || item.isFolder) && !item.isCenter;
-      if (isPreviewable && isHovered) {
-        const hoverBridge = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-        hoverBridge.setAttribute('x', '-18');
-        hoverBridge.setAttribute('y', `${-size - 46}`); // Extended to cover full gap to toolbar
-        hoverBridge.setAttribute('width', '36');
-        hoverBridge.setAttribute('height', '46'); // Increased from 18 to 46 to reach toolbar
-        hoverBridge.setAttribute('fill', 'transparent');
-        hoverBridge.style.pointerEvents = 'all';
-        nodeGroup.appendChild(hoverBridge);
+      const canPreview = !(item.type === 'folder' || item.isFolder) && !item.isCenter;
+      const canToggleFolderInline = (item.type === 'folder' || item.isFolder) && !item.isCenter && !item.isOverflowNode;
+      let hoverBridge: SVGRectElement | undefined;
+      let toolbarGroup: SVGGElement | undefined;
+      const toolbarButtons: SVGGElement[] = [];
 
-        const toolbarGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-        toolbarGroup.setAttribute('class', 'preview-toolbar');
-        toolbarGroup.setAttribute('transform', `translate(0, ${-size - 32})`);
+      const ensureToolbar = () => {
+        if (!toolbarGroup) {
+          hoverBridge = document.createElementNS('http://www.w3.org/2000/svg', 'rect') as SVGRectElement;
+          const baseBridgeWidth = Math.max(48, size * 2.4);
+          const baseBridgeHeight = Math.max(60, size * 2 + 60);
+          hoverBridge.setAttribute('y', `${-size - 46}`);
+          hoverBridge.setAttribute('width', baseBridgeWidth.toString());
+          hoverBridge.setAttribute('x', (-baseBridgeWidth / 2).toString());
+          hoverBridge.setAttribute('height', baseBridgeHeight.toString());
+          hoverBridge.setAttribute('fill', 'transparent');
+          hoverBridge.style.pointerEvents = 'all';
+          nodeGroup.appendChild(hoverBridge);
+
+          toolbarGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g') as SVGGElement;
+          toolbarGroup.setAttribute('class', 'preview-toolbar');
+          toolbarGroup.setAttribute('transform', `translate(0, ${-size - 32})`);
+          nodeGroup.appendChild(toolbarGroup);
+
+          let hideTimeout: number | null = null;
+
+          const clearHide = () => {
+            if (hideTimeout !== null) {
+              window.clearTimeout(hideTimeout);
+              hideTimeout = null;
+            }
+          };
+
+          const removeToolbar = () => {
+            clearHide();
+            if (hoverBridge && hoverBridge.isConnected) {
+              hoverBridge.remove();
+            }
+            if (toolbarGroup && toolbarGroup.isConnected) {
+              toolbarGroup.remove();
+            }
+            hoverBridge = undefined;
+            toolbarGroup = undefined;
+            toolbarButtons.length = 0;
+          };
+
+          const scheduleHide = () => {
+            clearHide();
+            hideTimeout = window.setTimeout(() => {
+              removeToolbar();
+            }, 600);
+          };
+
+          hoverBridge.addEventListener('mouseenter', clearHide);
+          hoverBridge.addEventListener('mouseleave', scheduleHide);
+          toolbarGroup.addEventListener('mouseenter', clearHide);
+          toolbarGroup.addEventListener('mouseleave', scheduleHide);
+          circle.addEventListener('mouseenter', clearHide);
+          circle.addEventListener('mouseleave', scheduleHide);
+        }
+      };
+
+      if (isHovered && canPreview) {
+        ensureToolbar();
 
         const previewButton = document.createElementNS('http://www.w3.org/2000/svg', 'g');
         previewButton.style.pointerEvents = 'all';
@@ -1082,9 +1149,7 @@ export default function ConstellationVisualization({
         buttonIcon.textContent = '👁';
         previewButton.appendChild(buttonIcon);
 
-        // Tooltip - positioned relative to node position in world space
         const tooltipGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-        // Initial position - will be updated dynamically
         tooltipGroup.setAttribute('transform', `translate(${pos.x - 100}, ${pos.y - size - 108})`);
         tooltipGroup.style.pointerEvents = 'none';
         tooltipGroup.style.opacity = '0';
@@ -1189,13 +1254,32 @@ export default function ConstellationVisualization({
           }
         });
 
-        toolbarGroup.appendChild(previewButton);
-        nodeGroup.appendChild(toolbarGroup);
+        const currentToolbar = toolbarGroup!;
+        currentToolbar.appendChild(previewButton);
+        toolbarButtons.push(previewButton);
 
         // Append tooltip to SVG root (not nodeGroup) so it's always on top
         // We'll position it absolutely when shown
         tooltipGroup.setAttribute('id', `tooltip-${item.id}`);
         svg.appendChild(tooltipGroup);
+      }
+
+      if (toolbarGroup && hoverBridge && toolbarButtons.length > 0) {
+        const spacing = 38;
+        const totalWidth = toolbarButtons.length * spacing;
+        const startX = -(totalWidth - spacing) / 2;
+        toolbarButtons.forEach((button, index) => {
+          const offset = startX + index * spacing;
+          button.setAttribute('transform', `translate(${offset}, 0)`);
+        });
+
+        const bridgeWidth = Math.max(48, totalWidth + 12);
+        const bridgeHeight = Math.max(60, size * 2 + 60);
+        const currentBridge = hoverBridge!;
+        currentBridge.setAttribute('width', bridgeWidth.toString());
+        currentBridge.setAttribute('x', (-bridgeWidth / 2).toString());
+        currentBridge.setAttribute('y', `${-size - 46}`);
+        currentBridge.setAttribute('height', bridgeHeight.toString());
       }
       
       // Add depth indicator rings for nested items
@@ -1225,8 +1309,22 @@ export default function ConstellationVisualization({
         depthIndicator.textContent = `D${depthLayer}`;
         nodeGroup.appendChild(depthIndicator);
       }
+
+      if (isHovered && canToggleFolderInline && svgRect && onFolderHoverToolbar) {
+        pendingFolderToolbar = {
+          item,
+          screenX: svgRect.left + pos.x,
+          screenY: svgRect.top + pos.y,
+          radius: size,
+          isExpanded,
+        };
+      }
     });
-  }, [allItems, state, getItemOpacity, getItemDepthLayer, getDepthScale, getDepthBlur, hideActiveTooltip, hoverHighlight]);
+
+    if (onFolderHoverToolbar) {
+      onFolderHoverToolbar(pendingFolderToolbar);
+    }
+  }, [allItems, state, getItemOpacity, getItemDepthLayer, getDepthScale, getDepthBlur, hideActiveTooltip, hoverHighlight, onFolderHoverToolbar]);
 
   // CRITICAL: Use event delegation instead of individual handlers
   useEffect(() => {
@@ -1426,9 +1524,14 @@ export default function ConstellationVisualization({
     svg.addEventListener('mousedown', handleSvgMouseDown, true);
     svg.addEventListener('mouseover', handleSvgMouseOver, true);
     svg.addEventListener('mouseout', (e) => {
-      if (!e.relatedTarget || !(e.relatedTarget as Element).closest('.node-group')) {
-        onItemHover(null);
+      const related = e.relatedTarget as Element | null;
+      if (
+        related &&
+        (related.closest('.node-group') || related.closest('.constellation-folder-toolbar'))
+      ) {
+        return;
       }
+      onItemHover(null);
     }, true);
 
     // Cleanup

@@ -95,6 +95,7 @@ export interface AppState {
   
   // Depth system
   expandedConstellations: Set<string>;
+  inlineExpandedConstellations: Set<string>;
   knowledgeBaseId: string | null;
   activeSpotlight: string | null;
   pinnedSpotlights: string[];
