@@ -324,30 +324,65 @@ export function useConstellation() {
       }
     };
 
-    const visitDescendants = (item: ConstellationItem, layer: number, options?: { inline?: boolean }) => {
+    type BranchTraversalMode =
+      | 'spotlight-active'
+      | 'spotlight-pinned'
+      | 'spotlight-secondary'
+      | 'knowledge-base'
+      | 'inline';
+
+    type BranchTraversalContext = {
+      mode: BranchTraversalMode;
+      rootLayer: number;
+    };
+
+    const spotlightBranchIdSet = new Set<string>(spotlightBranches.map(branch => branch.branchId));
+
+    const computeChildLayer = (
+      context: BranchTraversalContext,
+      parentLayer: number,
+      depthIndex: number
+    ) => {
+      if (context.mode === 'inline') {
+        return parentLayer + 1;
+      }
+
+      const baseFrontLayer = Math.max(0, context.rootLayer - 1);
+      if (depthIndex <= 0) {
+        return context.rootLayer;
+      }
+
+      return baseFrontLayer + (depthIndex - 1);
+    };
+
+    const visitDescendants = (
+      item: ConstellationItem,
+      context: BranchTraversalContext,
+      parentLayer: number,
+      depthIndex: number
+    ) => {
       const normalizedKey = normalizeId(item.id);
       const children = childrenByParentId.get(normalizedKey) || childrenByParentId.get(item.id);
       if (!children) return;
 
       children.forEach(child => {
-        const childLayer = options?.inline
-          ? layer + 1
-          : (layer >= 1 ? layer - 1 : layer + 1);
+        const childDepthIndex = depthIndex + 1;
+        const childLayer = computeChildLayer(context, parentLayer, childDepthIndex);
         assignItem(child, childLayer);
         assignLayer(normalizeId(child.id), childLayer);
 
         const normalizedChild = normalizeId(child.id);
         const isFolder = child.type === 'folder' || child.isFolder;
         const inlineExpanded = state.inlineExpandedConstellations.has(normalizedChild);
-        const spotlightExpanded = spotlightBranches.some(branch => branch.branchId === normalizedChild);
+        const spotlightExpanded = spotlightBranchIdSet.has(normalizedChild);
         const shouldVisit = isFolder && (
-          options?.inline
+          context.mode === 'inline'
             ? inlineExpanded
             : state.expandedConstellations.has(normalizedChild) || inlineExpanded || spotlightExpanded
         );
 
         if (shouldVisit) {
-          visitDescendants(child, childLayer, options);
+          visitDescendants(child, context, childLayer, childDepthIndex);
         }
       });
     };
@@ -357,13 +392,13 @@ export function useConstellation() {
     const pinnedNormalizedIds = new Set(state.pinnedSpotlights.map(id => normalizeId(id)));
     let knowledgeBaseRootLayer: number | null = null;
 
-    const processBranch = (branchId: string, offset: number, options?: { mode?: 'spotlight' | 'inline' }) => {
+    const processBranch = (branchId: string, offset: number, options?: { inline?: boolean }) => {
       if (!branchId || processedBranches.has(branchId)) return;
       processedBranches.add(branchId);
 
       const branchRootItem = itemsByNormalizedId.get(branchId) || itemsById.get(branchId);
       const isKnowledgeBaseBranch = branchId === state.knowledgeBaseId;
-      const isInlineMode = options?.mode === 'inline';
+      const isInlineMode = !!options?.inline;
       let rootLayer = isKnowledgeBaseBranch
         ? (offset === 0 ? 0 : offset)
         : (isInlineMode ? Math.max(1, branchRootItem ? getBaseDepthLayer(branchRootItem) : 1) : offset + 1);
@@ -376,13 +411,26 @@ export function useConstellation() {
       assignItem(branchRootItem, rootLayer);
       assignLayer(branchId, rootLayer);
 
+      const branchMode: BranchTraversalMode = (() => {
+        if (isInlineMode) return 'inline';
+        if (isKnowledgeBaseBranch) return 'knowledge-base';
+        if (activeSpotlightId && branchId === activeSpotlightId) return 'spotlight-active';
+        if (pinnedNormalizedIds.has(branchId)) return 'spotlight-pinned';
+        return 'spotlight-secondary';
+      })();
+
+      const traversalContext: BranchTraversalContext = {
+        mode: branchMode,
+        rootLayer
+      };
+
       const branchIsFolder = branchRootItem.type === 'folder' || branchRootItem.isFolder;
       const rootExpanded =
         !branchIsFolder ||
         state.expandedConstellations.has(branchId) ||
         state.inlineExpandedConstellations.has(branchId);
       if (rootExpanded) {
-        visitDescendants(branchRootItem, rootLayer, { inline: isInlineMode });
+        visitDescendants(branchRootItem, traversalContext, rootLayer, 0);
       }
 
       if (isKnowledgeBaseBranch && !isInlineMode) {
@@ -408,13 +456,13 @@ export function useConstellation() {
       }
     };
 
-    spotlightBranches.forEach(({ branchId, offset }) => processBranch(branchId, offset, { mode: 'spotlight' }));
+    spotlightBranches.forEach(({ branchId, offset }) => processBranch(branchId, offset));
 
     if (haveInline) {
       state.inlineExpandedConstellations.forEach(branchId => {
         const isInSpotlight = spotlightBranches.some(branch => branch.branchId === branchId);
         if (!isInSpotlight) {
-          processBranch(branchId, 0, { mode: 'inline' });
+          processBranch(branchId, 0, { inline: true });
         }
       });
     }
