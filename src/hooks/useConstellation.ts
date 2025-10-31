@@ -330,7 +330,9 @@ export function useConstellation() {
       if (!children) return;
 
       children.forEach(child => {
-        const childLayer = options?.inline ? layer + 1 : Math.max(0, layer - 1);
+        const childLayer = options?.inline
+          ? layer + 1
+          : (layer >= 1 ? layer - 1 : layer + 1);
         assignItem(child, childLayer);
         assignLayer(normalizeId(child.id), childLayer);
 
