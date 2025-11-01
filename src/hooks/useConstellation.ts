@@ -314,6 +314,22 @@ export function useConstellation() {
     const activeNormalized = activeSpotlightId ? normalizeId(activeSpotlightId) : null;
     const pinnedNormalized = new Set(pinnedSpotlightIds.map(id => normalizeId(id)));
 
+    const includeIdVariants = (target: Set<string>, candidateId: string) => {
+      if (!candidateId) return;
+      const normalizedVariant = normalizeId(candidateId);
+      target.add(candidateId);
+      target.add(normalizedVariant);
+      const centerVariant = `${normalizedVariant}_center`;
+      if (itemsById.has(centerVariant)) {
+        target.add(centerVariant);
+      }
+    };
+
+    console.log('📌 collectCascadeTargets:start', {
+      rootId,
+      initialQueue: queue.map(entry => entry.id)
+    });
+
     while (queue.length > 0) {
       const { id: actualId, force } = queue.shift()!;
       const normalized = normalizeId(actualId);
@@ -327,7 +343,22 @@ export function useConstellation() {
         itemsById.get(actualId);
 
       if (!item) {
+        console.log('⚠️ collectCascadeTargets:missingItem', {
+          actualId,
+          normalizedId: normalized,
+          action: 'Confirm this normalized id exists in itemsById/itemsByNormalizedId before cascade runs'
+        });
         continue;
+      }
+
+      if (actualId !== normalized) {
+        console.log('🪪 collectCascadeTargets:normalizedMismatch', {
+          actualId,
+          normalizedId: normalized,
+          resolvedId: item.id,
+          isCenter: item.isCenter,
+          action: 'Inline snapshots should include normalizeId(id) so downstream lookups resolve this folder'
+        });
       }
 
       const isFolderLike = item.type === 'folder' || item.isFolder || item.isCenter;
@@ -339,10 +370,10 @@ export function useConstellation() {
 
       if (isFolderLike) {
         if (isExpanded) {
-          expandedOut.add(normalized);
+          includeIdVariants(expandedOut, item.id);
         }
         if (isInline) {
-          inlineOut.add(normalized);
+          includeIdVariants(inlineOut, item.id);
         }
       }
 
@@ -351,28 +382,90 @@ export function useConstellation() {
         (force || isExpanded || isInline);
 
       if (!shouldTraverse) {
+        if (isInline) {
+          console.log('🚫 collectCascadeTargets:inlineNotTraversed', {
+            actualId,
+            normalizedId: normalized,
+            isFolderLike,
+            isInline,
+            isExpanded,
+            isSpotlight,
+            action: 'Ensure expandedSet or spotlightBranch includes this normalized id to descend inline children'
+          });
+        }
         continue;
       }
 
       const children =
         childrenByParentId.get(normalized) ||
         childrenByParentId.get(actualId);
-      if (!children) {
-        continue;
+      if (children) {
+        children.forEach(child => {
+          if (child.type === 'folder' || child.isFolder || child.isCenter) {
+            if (child.id !== normalizeId(child.id)) {
+              console.log('🌿 collectCascadeTargets:queueCenterChild', {
+                parentId: actualId,
+                childId: child.id,
+                childNormalized: normalizeId(child.id),
+                action: 'Verify normalized child id is recorded in cascadeSnapshots for inline promotion'
+              });
+            }
+            queue.push({ id: child.id, force: false });
+          }
+        });
       }
 
-      children.forEach(child => {
-        if (child.type === 'folder' || child.isFolder || child.isCenter) {
-          queue.push({ id: child.id, force: false });
+      if (item.isCenter) {
+        const constellationCandidates = new Set<string>();
+        if (item.constellation) {
+          constellationCandidates.add(item.constellation);
+          constellationCandidates.add(normalizeId(item.constellation));
         }
-      });
+        constellationCandidates.add(item.id);
+        constellationCandidates.add(normalized);
+
+        constellationCandidates.forEach(constellationId => {
+          const relatedItems = itemsByConstellation.get(constellationId);
+          if (!relatedItems) return;
+          relatedItems.forEach(child => {
+            const childNormalized = normalizeId(child.id);
+            if (visited.has(childNormalized)) return;
+            const childParentNormalized = child.parentId ? normalizeId(child.parentId) : null;
+            if (childParentNormalized && childParentNormalized !== normalized) {
+              // This child belongs to a different parent in the hierarchy; skip to avoid cross-links.
+              return;
+            }
+            if (child.type === 'folder' || child.isFolder || child.isCenter) {
+              if (child.id !== childNormalized) {
+                console.log('🌌 collectCascadeTargets:queueConstellationCenter', {
+                  parentId: actualId,
+                  constellationId: constellationId,
+                  childId: child.id,
+                  childNormalized,
+                  action: 'Ensure constellation cascade stores both center id and normalized id so depth traversal can resolve'
+                });
+              }
+              queue.push({ id: child.id, force: false });
+            }
+          });
+        });
+      }
     }
 
+    const expandedResult = Array.from(expandedOut);
+    const inlineResult = Array.from(inlineOut);
+
+    console.log('📋 collectCascadeTargets', {
+      rootId,
+      expandedResult,
+      inlineResult
+    });
+
     return {
-      expanded: Array.from(expandedOut),
-      inline: Array.from(inlineOut)
+      expanded: expandedResult,
+      inline: inlineResult
     };
-  }, [childrenByParentId, itemsById, itemsByNormalizedId]);
+  }, [childrenByParentId, itemsById, itemsByNormalizedId, itemsByConstellation]);
 
   const branchDepthOverrides = useMemo(() => {
     const overrides = new Map<string, number>();
@@ -440,24 +533,84 @@ export function useConstellation() {
       depthIndex: number
     ) => {
       const normalizedKey = normalizeId(item.id);
-      const children = childrenByParentId.get(normalizedKey) || childrenByParentId.get(item.id);
-      if (!children) return;
+      const seenChildren = new Set<string>();
+      const childCandidates: ConstellationItem[] = [];
 
-      children.forEach(child => {
+      const addChildCandidate = (candidate: ConstellationItem | undefined | null) => {
+        if (!candidate) return;
+        const normalizedCandidate = normalizeId(candidate.id);
+        const resolvedCandidate =
+          itemsByNormalizedId.get(normalizedCandidate) ||
+          itemsById.get(candidate.id) ||
+          candidate;
+        const resolvedNormalized = normalizeId(resolvedCandidate.id);
+        if (seenChildren.has(resolvedNormalized)) return;
+        if (resolvedNormalized === normalizedKey) return;
+        seenChildren.add(resolvedNormalized);
+        childCandidates.push(resolvedCandidate);
+      };
+
+      const normalizedParentItem = itemsByNormalizedId.get(normalizedKey);
+      const directChildren =
+        childrenByParentId.get(normalizedKey) ||
+        childrenByParentId.get(item.id) ||
+        (normalizedParentItem ? childrenByParentId.get(normalizedParentItem.id) : undefined);
+      if (directChildren) {
+        directChildren.forEach(addChildCandidate);
+      }
+
+      if (item.isCenter) {
+        const constellationCandidates = new Set<string>();
+        constellationCandidates.add(normalizedKey);
+        constellationCandidates.add(item.id);
+        if (item.constellation) {
+          constellationCandidates.add(item.constellation);
+          constellationCandidates.add(normalizeId(item.constellation));
+        }
+
+        constellationCandidates.forEach(constellationId => {
+          const relatedItems = itemsByConstellation.get(constellationId);
+          if (!relatedItems) return;
+          relatedItems.forEach(child => {
+            if (!child) return;
+            const childNormalized = normalizeId(child.id);
+            if (seenChildren.has(childNormalized)) return;
+            if (childNormalized === normalizedKey) return;
+            const parentNormalized = child.parentId ? normalizeId(child.parentId) : null;
+            if (parentNormalized && parentNormalized !== normalizedKey) return;
+            addChildCandidate(child);
+          });
+        });
+      }
+
+      childCandidates.forEach(child => {
         const childDepthIndex = depthIndex + 1;
         const childLayer = computeChildLayer(context, parentLayer, childDepthIndex);
         assignItem(child, childLayer);
         assignLayer(normalizeId(child.id), childLayer);
 
         const normalizedChild = normalizeId(child.id);
-        const isFolder = child.type === 'folder' || child.isFolder;
+        const isChildFolderLike = child.type === 'folder' || child.isFolder || child.isCenter;
         const inlineExpanded = state.inlineExpandedConstellations.has(normalizedChild);
         const spotlightExpanded = spotlightBranchIdSet.has(normalizedChild);
-        const shouldVisit = isFolder && (
+        const shouldVisit = isChildFolderLike && (
           context.mode === 'inline'
             ? inlineExpanded
             : state.expandedConstellations.has(normalizedChild) || inlineExpanded || spotlightExpanded
         );
+
+        if (inlineExpanded && !shouldVisit) {
+          console.log('🚧 visitDescendants:inlineSkipped', {
+            parentId: item.id,
+            childId: child.id,
+            normalizedChild,
+            contextMode: context.mode,
+            inlineExpanded,
+            spotlightExpanded,
+            isChildFolderLike,
+            action: 'Check inlineSnapshots/expandedConstellations for normalizedChild; it must be marked expanded to propagate depth'
+          });
+        }
 
         if (shouldVisit) {
           visitDescendants(child, context, childLayer, childDepthIndex);
@@ -1724,13 +1877,39 @@ export function useConstellation() {
         prevState.pinnedSpotlights
       );
 
+      console.log('🚀 Promote branch snapshot', {
+        rootId: folderId,
+        normalizedRoot,
+        activeSpotlight: prevState.activeSpotlight,
+        pinnedSpotlights: prevState.pinnedSpotlights,
+        expandedSnapshot: branchSnapshot.expanded,
+        inlineSnapshot: branchSnapshot.inline
+      });
+
+      const addExpandedVariants = (target: Set<string>, candidateId: string) => {
+        const normalizedCandidate = normalizeId(candidateId);
+        target.add(normalizedCandidate);
+        target.add(candidateId);
+        const centerVariant = `${normalizedCandidate}_center`;
+        if (itemsById.has(centerVariant)) {
+          target.add(centerVariant);
+        }
+      };
+
       const knowledgeBaseNormalized = prevState.knowledgeBaseId ? normalizeId(prevState.knowledgeBaseId) : null;
       const nextExpanded = new Set(prevState.expandedConstellations);
-      branchSnapshot.expanded.forEach(id => nextExpanded.add(id));
-      nextExpanded.add(normalizedRoot);
+      branchSnapshot.expanded.forEach(id => addExpandedVariants(nextExpanded, id));
+      branchSnapshot.inline.forEach(id => addExpandedVariants(nextExpanded, id));
+      addExpandedVariants(nextExpanded, folderId);
+      addExpandedVariants(nextExpanded, normalizedRoot);
 
       const nextInline = new Set(prevState.inlineExpandedConstellations);
-      branchSnapshot.inline.forEach(id => nextInline.delete(id));
+      branchSnapshot.inline.forEach(id => {
+        const normalizedId = normalizeId(id);
+        nextInline.delete(id);
+        nextInline.delete(normalizedId);
+        nextInline.delete(`${normalizedId}_center`);
+      });
 
       let nextActive = normalizedRoot;
       const nextPinned = prevState.pinnedSpotlights
@@ -1750,9 +1929,13 @@ export function useConstellation() {
       }
 
       const nextSnapshots = { ...prevState.cascadeSnapshots };
+      const expandedSnapshotSet = new Set<string>(branchSnapshot.expanded);
+      expandedSnapshotSet.add(normalizedRoot);
+      expandedSnapshotSet.add(folderId);
+      const inlineSnapshotSet = new Set<string>(branchSnapshot.inline);
       nextSnapshots[normalizedRoot] = {
-        expanded: Array.from(new Set([...branchSnapshot.expanded, normalizedRoot])),
-        inline: branchSnapshot.inline
+        expanded: Array.from(expandedSnapshotSet),
+        inline: Array.from(inlineSnapshotSet)
       };
 
       return {
@@ -1789,13 +1972,32 @@ export function useConstellation() {
         prevState.pinnedSpotlights
       );
 
+      console.log('🔄 Demote branch snapshot', {
+        rootId: folderId,
+        normalizedRoot,
+        activeSpotlight: prevState.activeSpotlight,
+        pinnedSpotlights: prevState.pinnedSpotlights,
+        cached: !!prevState.cascadeSnapshots[normalizedRoot],
+        expandedSnapshot: snapshot.expanded,
+        inlineSnapshot: snapshot.inline
+      });
+
       const nextExpanded = new Set(prevState.expandedConstellations);
+      const removeExpandedVariants = (target: Set<string>, candidateId: string) => {
+        const normalizedCandidate = normalizeId(candidateId);
+        target.delete(candidateId);
+        target.delete(normalizedCandidate);
+        target.delete(`${normalizedCandidate}_center`);
+      };
+
       const expandedSet = new Set(snapshot.expanded);
       expandedSet.add(normalizedRoot);
-      expandedSet.forEach(id => nextExpanded.delete(id));
+      expandedSet.add(folderId);
+      expandedSet.forEach(id => removeExpandedVariants(nextExpanded, id));
+      snapshot.inline.forEach(id => removeExpandedVariants(nextExpanded, id));
 
       const nextInline = new Set(prevState.inlineExpandedConstellations);
-      snapshot.inline.forEach(id => nextInline.add(id));
+      snapshot.inline.forEach(id => nextInline.add(normalizeId(id)));
 
       let nextActive = activeNormalized;
       let nextPinned = prevState.pinnedSpotlights
