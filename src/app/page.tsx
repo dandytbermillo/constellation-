@@ -40,6 +40,8 @@ export default function ConstellationPage() {
     getDepthBlur,
     handleItemClickWithDepth,
     toggleFolderVisibilityInline,
+    promoteBranchToSpotlight,
+    demoteBranchFromSpotlight,
     getDepthZ,
     getConstellationDepthZ,
     // Panel visibility functions
@@ -97,6 +99,9 @@ export default function ConstellationPage() {
     screenY: number;
     radius: number;
     isExpanded: boolean;
+    isSpotlightRoot: boolean;
+    isActiveSpotlight: boolean;
+    canInlineToggle: boolean;
   };
 
   const [folderToolbarState, setFolderToolbarState] = useState<FolderToolbarState | null>(null);
@@ -423,18 +428,54 @@ export default function ConstellationPage() {
             handleItemHover(null);
           }}
         >
-          <button
-            className="w-8 h-8 flex items-center justify-center bg-slate-700/80 hover:bg-slate-600/90 rounded-md border border-slate-500/70 text-slate-200 text-lg"
-            onClick={() => {
-              toggleFolderVisibilityInline(folderToolbarState.item.id);
-              setFolderToolbarState(prev => prev ? { ...prev, isExpanded: !prev.isExpanded } : prev);
-            }}
-          >
-            {folderToolbarState.isExpanded ? '📂' : '📁'}
-          </button>
-          <span className="text-xs text-slate-300 whitespace-nowrap">
-            {folderToolbarState.isExpanded ? 'Hide contents' : 'Show contents'}
-          </span>
+          <div className="flex items-center gap-2">
+            {folderToolbarState.canInlineToggle && (
+              <button
+                className="w-8 h-8 flex items-center justify-center bg-slate-700/80 hover:bg-slate-600/90 rounded-md border border-slate-500/70 text-slate-200 text-lg"
+                title={folderToolbarState.isExpanded ? 'Hide inline contents' : 'Show inline contents'}
+                onClick={() => {
+                  toggleFolderVisibilityInline(folderToolbarState.item.id);
+                  setFolderToolbarState(prev => prev ? { ...prev, isExpanded: !prev.isExpanded } : prev);
+                }}
+              >
+                {folderToolbarState.isExpanded ? '📂' : '📁'}
+              </button>
+            )}
+
+            {!folderToolbarState.isSpotlightRoot && (
+              <button
+                className="w-8 h-8 flex items-center justify-center bg-slate-700/80 hover:bg-slate-600/90 rounded-md border border-slate-500/70 text-slate-200 text-base"
+                title="Bring branch to spotlight"
+                onClick={() => {
+                  promoteBranchToSpotlight(folderToolbarState.item.id);
+                  handleItemHover(null);
+                  setFolderToolbarState(null);
+                }}
+              >
+                🔆
+              </button>
+            )}
+
+            {folderToolbarState.isSpotlightRoot && (
+              <button
+                className="w-8 h-8 flex items-center justify-center bg-slate-700/80 hover:bg-slate-600/90 rounded-md border border-slate-500/70 text-slate-200 text-base"
+                title="Return branch to background"
+                onClick={() => {
+                  demoteBranchFromSpotlight(folderToolbarState.item.id);
+                  handleItemHover(null);
+                  setFolderToolbarState(null);
+                }}
+              >
+                ↩️
+              </button>
+            )}
+          </div>
+
+          {folderToolbarState.canInlineToggle && (
+            <span className="text-xs text-slate-300 whitespace-nowrap">
+              {folderToolbarState.isExpanded ? 'Hide inline contents' : 'Show inline contents'}
+            </span>
+          )}
         </div>
       )}
       

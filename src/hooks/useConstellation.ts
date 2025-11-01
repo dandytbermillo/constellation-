@@ -141,6 +141,9 @@ const initialState: AppState = {
   edgeScrollDirection: { x: 0, y: 0 },
   edgeScrollSpeed: 0,
   edgeScrollAcceleration: 0,
+
+  // Spotlight cascade memory
+  cascadeSnapshots: {},
 };
 
 export function useConstellation() {
@@ -295,6 +298,81 @@ export function useConstellation() {
 
     return 1;
   }, [allItems, state.expandedConstellations]);
+
+  const collectCascadeTargets = useCallback((
+    rootId: string,
+    expandedSet: Set<string>,
+    inlineSet: Set<string>,
+    activeSpotlightId: string | null,
+    pinnedSpotlightIds: string[]
+  ): { expanded: string[]; inline: string[] } => {
+    const expandedOut = new Set<string>();
+    const inlineOut = new Set<string>();
+    const visited = new Set<string>();
+    const queue: Array<{ id: string; force: boolean }> = [{ id: rootId, force: true }];
+
+    const activeNormalized = activeSpotlightId ? normalizeId(activeSpotlightId) : null;
+    const pinnedNormalized = new Set(pinnedSpotlightIds.map(id => normalizeId(id)));
+
+    while (queue.length > 0) {
+      const { id: actualId, force } = queue.shift()!;
+      const normalized = normalizeId(actualId);
+      if (visited.has(normalized)) {
+        continue;
+      }
+      visited.add(normalized);
+
+      const item =
+        itemsByNormalizedId.get(normalized) ||
+        itemsById.get(actualId);
+
+      if (!item) {
+        continue;
+      }
+
+      const isFolderLike = item.type === 'folder' || item.isFolder || item.isCenter;
+      const isSpotlight =
+        (activeNormalized !== null && activeNormalized === normalized) ||
+        pinnedNormalized.has(normalized);
+      const isExpanded = force || expandedSet.has(normalized) || isSpotlight;
+      const isInline = inlineSet.has(normalized);
+
+      if (isFolderLike) {
+        if (isExpanded) {
+          expandedOut.add(normalized);
+        }
+        if (isInline) {
+          inlineOut.add(normalized);
+        }
+      }
+
+      const shouldTraverse =
+        isFolderLike &&
+        (force || isExpanded || isInline);
+
+      if (!shouldTraverse) {
+        continue;
+      }
+
+      const children =
+        childrenByParentId.get(normalized) ||
+        childrenByParentId.get(actualId);
+      if (!children) {
+        continue;
+      }
+
+      children.forEach(child => {
+        if (child.type === 'folder' || child.isFolder || child.isCenter) {
+          queue.push({ id: child.id, force: false });
+        }
+      });
+    }
+
+    return {
+      expanded: Array.from(expandedOut),
+      inline: Array.from(inlineOut)
+    };
+  }, [childrenByParentId, itemsById, itemsByNormalizedId]);
 
   const branchDepthOverrides = useMemo(() => {
     const overrides = new Map<string, number>();
@@ -1632,6 +1710,132 @@ export function useConstellation() {
     });
   }, [allItems, showHint, state.expandedConstellations, state.inlineExpandedConstellations, state.knowledgeBaseId, getParentNormalized]);
 
+  const promoteBranchToSpotlight = useCallback((folderId: string) => {
+    const folderItem = itemsById.get(folderId) || itemsByNormalizedId.get(normalizeId(folderId));
+
+    setState(prevState => {
+      const normalizedRoot = normalizeId(folderId);
+      const activeNormalized = prevState.activeSpotlight ? normalizeId(prevState.activeSpotlight) : null;
+      const branchSnapshot = collectCascadeTargets(
+        folderId,
+        prevState.expandedConstellations,
+        prevState.inlineExpandedConstellations,
+        prevState.activeSpotlight,
+        prevState.pinnedSpotlights
+      );
+
+      const knowledgeBaseNormalized = prevState.knowledgeBaseId ? normalizeId(prevState.knowledgeBaseId) : null;
+      const nextExpanded = new Set(prevState.expandedConstellations);
+      branchSnapshot.expanded.forEach(id => nextExpanded.add(id));
+      nextExpanded.add(normalizedRoot);
+
+      const nextInline = new Set(prevState.inlineExpandedConstellations);
+      branchSnapshot.inline.forEach(id => nextInline.delete(id));
+
+      let nextActive = normalizedRoot;
+      const nextPinned = prevState.pinnedSpotlights
+        .map(id => normalizeId(id))
+        .filter(id => id !== normalizedRoot);
+
+      if (activeNormalized && activeNormalized !== normalizedRoot) {
+        if (!knowledgeBaseNormalized || activeNormalized !== knowledgeBaseNormalized) {
+          if (!nextPinned.includes(activeNormalized)) {
+            nextPinned.push(activeNormalized);
+          }
+        }
+      }
+
+      while (nextPinned.length > MAX_PINNED_SPOTLIGHTS) {
+        nextPinned.shift();
+      }
+
+      const nextSnapshots = { ...prevState.cascadeSnapshots };
+      nextSnapshots[normalizedRoot] = {
+        expanded: Array.from(new Set([...branchSnapshot.expanded, normalizedRoot])),
+        inline: branchSnapshot.inline
+      };
+
+      return {
+        ...prevState,
+        expandedConstellations: nextExpanded,
+        inlineExpandedConstellations: nextInline,
+        activeSpotlight: nextActive,
+        pinnedSpotlights: nextPinned,
+        cascadeSnapshots: nextSnapshots,
+        depthAnimationActive: false
+      };
+    });
+
+    if (folderItem) {
+      showHint(`${folderItem.title} spotlighted`, 1200);
+    } else {
+      showHint('Branch spotlighted', 1200);
+    }
+  }, [collectCascadeTargets, itemsById, itemsByNormalizedId, showHint]);
+
+  const demoteBranchFromSpotlight = useCallback((folderId: string) => {
+    const folderItem = itemsById.get(folderId) || itemsByNormalizedId.get(normalizeId(folderId));
+
+    setState(prevState => {
+      const normalizedRoot = normalizeId(folderId);
+      const activeNormalized = prevState.activeSpotlight ? normalizeId(prevState.activeSpotlight) : null;
+      const knowledgeBaseNormalized = prevState.knowledgeBaseId ? normalizeId(prevState.knowledgeBaseId) : null;
+
+      const snapshot = prevState.cascadeSnapshots[normalizedRoot] ?? collectCascadeTargets(
+        folderId,
+        prevState.expandedConstellations,
+        prevState.inlineExpandedConstellations,
+        prevState.activeSpotlight,
+        prevState.pinnedSpotlights
+      );
+
+      const nextExpanded = new Set(prevState.expandedConstellations);
+      const expandedSet = new Set(snapshot.expanded);
+      expandedSet.add(normalizedRoot);
+      expandedSet.forEach(id => nextExpanded.delete(id));
+
+      const nextInline = new Set(prevState.inlineExpandedConstellations);
+      snapshot.inline.forEach(id => nextInline.add(id));
+
+      let nextActive = activeNormalized;
+      let nextPinned = prevState.pinnedSpotlights
+        .map(id => normalizeId(id))
+        .filter(id => id !== normalizedRoot);
+
+      if (nextActive === normalizedRoot) {
+        if (nextPinned.length > 0) {
+          nextActive = nextPinned[nextPinned.length - 1];
+          nextPinned = nextPinned.slice(0, -1);
+        } else {
+          nextActive = knowledgeBaseNormalized;
+        }
+      }
+
+      if (!nextActive && knowledgeBaseNormalized) {
+        nextActive = knowledgeBaseNormalized;
+      }
+
+      const nextSnapshots = { ...prevState.cascadeSnapshots };
+      delete nextSnapshots[normalizedRoot];
+
+      return {
+        ...prevState,
+        expandedConstellations: nextExpanded,
+        inlineExpandedConstellations: nextInline,
+        activeSpotlight: nextActive,
+        pinnedSpotlights: nextPinned,
+        cascadeSnapshots: nextSnapshots,
+        depthAnimationActive: false
+      };
+    });
+
+    if (folderItem) {
+      showHint(`${folderItem.title} returned to background`, 1200);
+    } else {
+      showHint('Branch returned to background', 1200);
+    }
+  }, [collectCascadeTargets, itemsById, itemsByNormalizedId, showHint]);
+
   // Enhanced item click handler that supports depth interaction and group selection
   const handleItemClickWithDepth = useCallback((item: ConstellationItem, event?: React.MouseEvent) => {
     console.log('🖱️ Item clicked:', item.title, 'Type:', item.type, 'IsFolder:', item.isFolder, 'Shift:', event?.shiftKey, 'Event:', event);
@@ -2092,6 +2296,8 @@ export function useConstellation() {
     // New depth-layered expansion functions
     toggleConstellationExpansion,
     toggleFolderVisibilityInline,
+    promoteBranchToSpotlight,
+    demoteBranchFromSpotlight,
     handleShiftClick,
     getItemDepthLayer,
     getDepthScale,

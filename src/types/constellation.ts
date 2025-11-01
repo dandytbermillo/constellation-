@@ -126,6 +126,12 @@ export interface AppState {
   edgeScrollDirection: { x: number; y: number };
   edgeScrollSpeed: number;
   edgeScrollAcceleration: number;
+
+  // Spotlight cascade memory for toolbar actions
+  cascadeSnapshots: Record<string, {
+    expanded: string[];
+    inline: string[];
+  }>;
 }
 
 export type ItemType = 

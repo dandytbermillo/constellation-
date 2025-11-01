@@ -868,9 +868,16 @@ export default function ConstellationVisualization({
       screenY: number;
       radius: number;
       isExpanded: boolean;
+      isSpotlightRoot: boolean;
+      isActiveSpotlight: boolean;
+      canInlineToggle: boolean;
     } | null = null;
 
     const svgRect = svgRef.current?.getBoundingClientRect();
+
+    const activeSpotlightNormalized = state.activeSpotlight ? normalizeId(state.activeSpotlight) : null;
+    const pinnedSpotlightSet = new Set(state.pinnedSpotlights.map(id => normalizeId(id)));
+    const knowledgeBaseNormalized = state.knowledgeBaseId ? normalizeId(state.knowledgeBaseId) : null;
 
     sortedItems.forEach(({ item, pos, depthLayer }) => {
       const depthScale = getDepthScale(depthLayer, item.isCenter);
@@ -880,14 +887,37 @@ export default function ConstellationVisualization({
       const color = getItemColor(item);
       const depthBlur = getDepthBlur(depthLayer);
 
+      const normalizedItemId = normalizeId(item.id);
       const isHovered = state.hoveredItem === item;
+      if (isHovered) {
+        console.log('Hover candidate', {
+          title: item.title,
+          id: item.id,
+          type: item.type,
+          isFolder: item.isFolder,
+          isCenter: item.isCenter,
+          parentId: item.parentId,
+          constellation: item.constellation,
+          knowledgeBaseId: state.knowledgeBaseId
+        });
+      }
       const isSelected = state.selectedItem === item;
       const isDragged = state.draggedNode === item.id;
       const isFocused = state.focusedItems.has(item.id);
       const isExpanded = state.expandedConstellations.has(item.id) || 
                         (item.isCenter && item.constellation && state.expandedConstellations.has(item.constellation));
       const isHighlighted = highlightIds.has(item.id);
-      
+      const parentNormalized = item.parentId ? normalizeId(item.parentId) : null;
+      const isKnowledgeBaseCenter = knowledgeBaseNormalized !== null && normalizedItemId === knowledgeBaseNormalized;
+      const isKnowledgeBaseChildCenter =
+        knowledgeBaseNormalized !== null &&
+        item.isCenter &&
+        !parentNormalized &&
+        (!item.constellation || normalizeId(item.constellation) === normalizedItemId);
+      const isActiveSpotlightRoot = !!activeSpotlightNormalized && activeSpotlightNormalized === normalizedItemId;
+      const isPinnedSpotlightRoot = pinnedSpotlightSet.has(normalizedItemId);
+      const isSpotlightRoot = isActiveSpotlightRoot || isPinnedSpotlightRoot;
+
       // Group selection indicators
       const isGroupSelected = state.selectedGroupItems.has(item.id);
       const isGroupParent = state.groupParentId === item.id;
@@ -1126,8 +1156,13 @@ export default function ConstellationVisualization({
       
       nodeGroup.appendChild(text);
 
+      const treatAsFolder =
+        (item.type === 'folder' || item.isFolder) ||
+        isKnowledgeBaseCenter ||
+        isKnowledgeBaseChildCenter;
+
       const canPreview = !(item.type === 'folder' || item.isFolder) && !item.isCenter;
-      const canToggleFolderInline = (item.type === 'folder' || item.isFolder) && !item.isCenter && !item.isOverflowNode;
+      const canToggleFolderInline = treatAsFolder && !isKnowledgeBaseCenter && !item.isOverflowNode;
       let hoverBridge: SVGRectElement | undefined;
       let toolbarGroup: SVGGElement | undefined;
       const toolbarButtons: SVGGElement[] = [];
@@ -1375,13 +1410,20 @@ export default function ConstellationVisualization({
         nodeGroup.appendChild(depthIndicator);
       }
 
-      if (isHovered && canToggleFolderInline && svgRect && onFolderHoverToolbar) {
+      const toolbarEligible =
+        !item.isOverflowNode &&
+        treatAsFolder;
+
+      if (isHovered && toolbarEligible && svgRect && onFolderHoverToolbar) {
         pendingFolderToolbar = {
           item,
           screenX: svgRect.left + pos.x,
           screenY: svgRect.top + pos.y,
           radius: size,
           isExpanded,
+          isSpotlightRoot,
+          isActiveSpotlight: isActiveSpotlightRoot,
+          canInlineToggle: canToggleFolderInline,
         };
       }
     });
