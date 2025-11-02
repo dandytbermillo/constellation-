@@ -556,12 +556,7 @@ export function useConstellation() {
         return context.rootLayer;
       }
 
-      let layer = baseFrontLayer + (depthIndex - 1);
-      if (context.mode === 'spotlight-active') {
-        layer = Math.max(0, layer - 1);
-      }
-
-      return layer;
+      return baseFrontLayer + (depthIndex - 1);
     };
 
     const visitDescendants = (
